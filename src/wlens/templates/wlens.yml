@@ -1,0 +1,17 @@
+# wlens.yml — warehouse-lens config.
+# Full reference: https://github.com/whimsical/wlens/blob/main/docs/wlens-yml-reference.md
+
+adapter:
+  kind: dbt
+  project_dir: .
+
+executor:
+  kind: duckdb
+  path: warehouse.duckdb
+  # For postgres / redshift, replace the two lines above with:
+  #   kind: postgres           # or redshift
+  #   host:     ${WLENS_DB_HOST}
+  #   port:     5432           # 5439 for redshift
+  #   database: ${WLENS_DB_NAME}
+  #   user:     ${WLENS_DB_USER}
+  #   password: ${WLENS_DB_PASSWORD}

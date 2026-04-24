@@ -1,0 +1,66 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wlens"
+version = "0.1.0"
+description = "Warehouse lens for AI agents — per-table markdown docs + read-only SQL adaptor, zero-runtime schema exploration for Claude Code, Cursor, Continue."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "Whimsical" }]
+keywords = ["dbt", "llm", "agent", "warehouse", "schema", "ai", "redshift", "postgres", "claude-code", "cursor"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "pyyaml>=6.0",
+    "ruamel.yaml>=0.18",
+    "psycopg2-binary>=2.9",
+    "duckdb>=1.0",
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+    "tabulate>=0.9",
+    "mcp>=1.27.0",
+    "fastapi>=0.136.1",
+    "uvicorn[standard]>=0.46.0",
+    "pyngrok>=8.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+wlens = "wlens.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/whimsical/wlens"
+Issues = "https://github.com/whimsical/wlens/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wlens"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"

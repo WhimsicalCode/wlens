@@ -1,0 +1,10 @@
+widget-created:
+  description: A user creates a new widget.
+  attributes:
+    color: Chosen widget colour.
+    source: Where the create dialog was opened from.
+
+widget-deleted:
+  description: A user deletes a widget.
+  attributes:
+    reason: Why the user said they deleted it.

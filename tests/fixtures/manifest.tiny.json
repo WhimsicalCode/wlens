@@ -1,0 +1,146 @@
+{
+  "metadata": {
+    "project_name": "tinyproj"
+  },
+  "nodes": {
+    "model.tinyproj.dim_widget": {
+      "resource_type": "model",
+      "name": "dim_widget",
+      "schema": "prod",
+      "description": "Dimension of every widget. One row per widget. Used as a join key from fct_sale.",
+      "path": "marts/dim_widget.sql",
+      "raw_code": "select 1 as widget_id, 'blue' as color",
+      "columns": {
+        "widget_id": {
+          "data_type": "varchar",
+          "description": "Primary key.",
+          "meta": {}
+        },
+        "color": {
+          "data_type": "varchar",
+          "description": "Widget color. Values: 'blue', 'red', 'green'.",
+          "meta": {}
+        },
+        "owner_email": {
+          "data_type": "varchar",
+          "description": "Email address of the widget's owner.",
+          "meta": {}
+        }
+      },
+      "depends_on": {
+        "nodes": ["source.tinyproj.raw.raw_widget"]
+      }
+    },
+    "model.tinyproj.fct_sale": {
+      "resource_type": "model",
+      "name": "fct_sale",
+      "schema": "prod",
+      "description": "Fact table of widget sales.",
+      "path": "marts/fct_sale.sql",
+      "raw_code": "select 1 as sale_id",
+      "columns": {
+        "sale_id": {
+          "data_type": "bigint",
+          "description": "Primary key.",
+          "meta": {}
+        },
+        "widget_id": {
+          "data_type": "varchar",
+          "description": "FK to dim_widget.",
+          "meta": {}
+        },
+        "status": {
+          "data_type": "varchar",
+          "description": "Lifecycle.",
+          "meta": {}
+        }
+      },
+      "depends_on": {
+        "nodes": ["model.tinyproj.dim_widget"]
+      }
+    },
+    "test.tinyproj.unique_dim_widget_widget_id.abc1": {
+      "resource_type": "test",
+      "name": "unique_dim_widget_widget_id",
+      "attached_node": "model.tinyproj.dim_widget",
+      "column_name": "widget_id",
+      "test_metadata": {
+        "name": "unique",
+        "kwargs": {"column_name": "widget_id", "model": "{{ get_where_subquery(ref('dim_widget')) }}"}
+      }
+    },
+    "test.tinyproj.not_null_dim_widget_widget_id.abc2": {
+      "resource_type": "test",
+      "name": "not_null_dim_widget_widget_id",
+      "attached_node": "model.tinyproj.dim_widget",
+      "column_name": "widget_id",
+      "test_metadata": {
+        "name": "not_null",
+        "kwargs": {"column_name": "widget_id"}
+      }
+    },
+    "test.tinyproj.relationships_fct_sale_widget_id.abc3": {
+      "resource_type": "test",
+      "name": "relationships_fct_sale_widget_id__widget_id__ref_dim_widget_",
+      "attached_node": "model.tinyproj.fct_sale",
+      "column_name": "widget_id",
+      "test_metadata": {
+        "name": "relationships",
+        "kwargs": {
+          "column_name": "widget_id",
+          "to": "ref('dim_widget')",
+          "field": "widget_id",
+          "model": "{{ get_where_subquery(ref('fct_sale')) }}"
+        }
+      }
+    },
+    "test.tinyproj.accepted_values_fct_sale_status.abc4": {
+      "resource_type": "test",
+      "name": "accepted_values_fct_sale_status__shipped__completed__pending",
+      "attached_node": "model.tinyproj.fct_sale",
+      "column_name": "status",
+      "test_metadata": {
+        "name": "accepted_values",
+        "kwargs": {
+          "column_name": "status",
+          "values": ["shipped", "completed", "pending"]
+        }
+      }
+    },
+    "model.tinyproj.stg_raw_widget": {
+      "resource_type": "model",
+      "name": "stg_raw_widget",
+      "schema": "staging",
+      "description": "Staging view — should be filtered out by default.",
+      "path": "staging/stg_raw_widget.sql",
+      "raw_code": "select 1",
+      "columns": {},
+      "depends_on": { "nodes": [] }
+    }
+  },
+  "sources": {
+    "source.tinyproj.raw.raw_widget": {
+      "name": "raw_widget",
+      "schema": "raw",
+      "description": "Raw widget stream from the app.",
+      "columns": {
+        "widget_id": {
+          "data_type": "varchar",
+          "description": "ID.",
+          "meta": {}
+        }
+      }
+    },
+    "source.tinyproj.raw.raw_event": {
+      "name": "raw_event",
+      "schema": "raw",
+      "description": "User-track event stream.",
+      "columns": {
+        "id": { "data_type": "varchar", "description": "Event ID." },
+        "created": { "data_type": "timestamp", "description": "When the event fired." },
+        "event": { "data_type": "varchar", "description": "Event name." },
+        "data": { "data_type": "super", "description": "JSON attributes." }
+      }
+    }
+  }
+}
