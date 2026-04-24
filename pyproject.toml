@@ -27,11 +27,9 @@ dependencies = [
     "ruamel.yaml>=0.18",
     "psycopg2-binary>=2.9",
     "duckdb>=1.0",
-    "pandas>=2.0",
-    "pyarrow>=14.0",
-    "tabulate>=0.9",
     "mcp>=1.27.0",
-    "fastapi>=0.136.1",
+    "starlette>=0.27",
+    "anyio>=4.5",
     "uvicorn[standard]>=0.46.0",
     "pyngrok>=8.0.0",
 ]
