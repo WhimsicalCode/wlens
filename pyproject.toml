@@ -45,8 +45,9 @@ dev = [
 wlens = "wlens.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/whimsical/wlens"
-Issues = "https://github.com/whimsical/wlens/issues"
+Homepage = "https://github.com/WhimsicalCode/wlens"
+Repository = "https://github.com/WhimsicalCode/wlens"
+Issues = "https://github.com/WhimsicalCode/wlens/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/wlens"]
