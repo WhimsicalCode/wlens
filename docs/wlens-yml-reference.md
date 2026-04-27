@@ -106,16 +106,25 @@ output:
   sample_size: 5
 ```
 
-## `entities`
+## `entities` and `plugins`
 
-Optional list of custom entity types. See
-[`custom-entities.md`](custom-entities.md) for the full reference.
+Optional list of table catalogs. wlens ships zero kinds out of the
+box — `kind:` is a label, and any unregistered kind falls back to a
+generic auto-renderer. For richer rendering (custom intros, SQL
+examples, conditional callouts), define a `TableCatalog` subclass in
+your own repo and register it via `plugins:`. See
+[`table-catalogs.md`](table-catalogs.md) for the full reference and
+worked examples in [`examples/`](../examples/).
 
 ```yaml
+plugins:
+  - ./wlens_catalogs.py        # optional: TableCatalog subclasses
+
 entities:
-  - kind: events
-    source: tools/events.yml
-    inline_into: public.user_track_event
+  - kind: feature_flags        # auto-rendered (zero-code)
+    title: Feature flags
+    source: tools/flags.yml
+    table: public.feature_flags
 ```
 
 ## Minimal example (what `wlens init` writes)
