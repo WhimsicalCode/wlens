@@ -1,5 +1,5 @@
-"""Custom entity types — inlined into per-table markdown."""
+"""Per-table catalogs — inlined into table markdown."""
 
-from .loader import CustomEntity, load_entities
+from .loader import TableCatalog, load_entities
 
-__all__ = ["CustomEntity", "load_entities"]
+__all__ = ["TableCatalog", "load_entities"]

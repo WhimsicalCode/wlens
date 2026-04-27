@@ -94,7 +94,8 @@ def test_index_uses_first_sentence_summary(tmp_path, dbt_project):
 
 
 def test_events_inlined_into_source(tmp_path, dbt_project, fixtures):
-    # Wire up the events entity pointing at raw.raw_event.
+    """End-to-end: load `examples/events.py` via plugins, render against a dbt source."""
+    events_example = Path(__file__).resolve().parents[1] / "examples" / "events.py"
     cfg_path = tmp_path / "wlens.yml"
     cfg_path.write_text(
         textwrap.dedent(f"""
@@ -105,15 +106,15 @@ def test_events_inlined_into_source(tmp_path, dbt_project, fixtures):
             output:
               dir: .claude/schema
               include_sample_rows: false
+            plugins:
+              - {events_example}
             entities:
               - kind: events
-                source: {(fixtures / "events.tiny.yml").relative_to(tmp_path.parent) if False else "events.tiny.yml"}
-                inline_into: raw.raw_event
-                source_table: raw.raw_event
+                source: events.tiny.yml
+                table: raw.raw_event
                 core_columns: [id, created, event]
         """).lstrip()
     )
-    # Copy the events file so the relative path in the config resolves from cwd.
     (tmp_path / "events.tiny.yml").write_text((fixtures / "events.tiny.yml").read_text())
 
     cfg = load_config(cfg_path)
@@ -126,3 +127,159 @@ def test_events_inlined_into_source(tmp_path, dbt_project, fixtures):
     assert "**Attributes:**" in event_md
     assert "**Example query:**" in event_md
     assert 'data."color"::text as "color"' in event_md
+
+
+def test_table_catalog_zero_code(tmp_path, dbt_project):
+    """A user can declare a brand-new kind in wlens.yml with no Python."""
+    (tmp_path / "flags.yml").write_text(
+        textwrap.dedent("""
+            beta-dashboard:
+              description: Enables the redesigned dashboard.
+              attributes:
+                owner: dashboard-team
+                rollout: 25%
+        """).lstrip()
+    )
+    cfg_path = tmp_path / "wlens.yml"
+    cfg_path.write_text(
+        textwrap.dedent(f"""
+            adapter:
+              kind: dbt
+              project_dir: {dbt_project.relative_to(tmp_path)}
+              include_prefixes: [raw_]
+            output:
+              dir: .claude/schema
+              include_sample_rows: false
+            entities:
+              - kind: feature_flags
+                title: Feature flags
+                source: flags.yml
+                table: raw.raw_event
+        """).lstrip()
+    )
+
+    cfg = load_config(cfg_path)
+    entities = DbtAdapter(cfg).list_entities()
+    custom = load_entities(cfg)
+    render_and_write_all(entities, custom, None, cfg)
+
+    md = (cfg.output_dir / "raw.raw_event.md").read_text()
+    assert "## Feature flags" in md
+    assert "### `beta-dashboard`" in md
+    assert "Enables the redesigned dashboard." in md
+    assert "**Attributes:**" in md
+    assert "- `owner` — dashboard-team" in md
+
+
+def test_table_catalog_plugin(tmp_path, dbt_project):
+    """A user can subclass TableCatalog from a plugin file referenced in wlens.yml."""
+    (tmp_path / "wlens_catalogs.py").write_text(
+        textwrap.dedent('''
+            from dataclasses import dataclass
+            from wlens.entities import TableCatalog
+
+            @dataclass
+            class IncidentsCatalog(TableCatalog):
+                kind: str = "incidents"
+                title: str = "Incidents"
+
+                def entry_extras(self, name, spec):
+                    runbook = spec.get("runbook")
+                    return ["", f"[Runbook]({runbook})", ""] if runbook else []
+        ''').lstrip()
+    )
+    (tmp_path / "incidents.yml").write_text(
+        textwrap.dedent("""
+            login-outage-2024-09:
+              description: Login flow returned 500s for 14 minutes.
+              severity: high
+              runbook: https://runbooks.example/login-outage
+        """).lstrip()
+    )
+    cfg_path = tmp_path / "wlens.yml"
+    cfg_path.write_text(
+        textwrap.dedent(f"""
+            adapter:
+              kind: dbt
+              project_dir: {dbt_project.relative_to(tmp_path)}
+              include_prefixes: [raw_]
+            output:
+              dir: .claude/schema
+              include_sample_rows: false
+            plugins:
+              - ./wlens_catalogs.py
+            entities:
+              - kind: incidents
+                source: incidents.yml
+                table: raw.raw_event
+        """).lstrip()
+    )
+
+    cfg = load_config(cfg_path)
+    entities = DbtAdapter(cfg).list_entities()
+    custom = load_entities(cfg)
+    render_and_write_all(entities, custom, None, cfg)
+
+    md = (cfg.output_dir / "raw.raw_event.md").read_text()
+    assert "## Incidents" in md
+    assert "### `login-outage-2024-09`" in md
+    # Auto-rendered scalar from the base TableCatalog.
+    assert "**Severity:** high" in md
+    # Subclass entry_extras still runs (auto-render can't make a markdown link).
+    assert "[Runbook](https://runbooks.example/login-outage)" in md
+
+
+def test_plans_example_renders():
+    """Smoke test for the in-tree PlansCatalog example so it doesn't bitrot.
+
+    Loads `examples/plans.py` by path (the same way the plugin loader does)
+    so the file's external location matches how a user would consume it.
+    """
+    import importlib.util
+    import sys
+
+    example_path = Path(__file__).resolve().parents[1] / "examples" / "plans.py"
+    spec = importlib.util.spec_from_file_location("plans_example", example_path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+
+    cat = mod.PlansCatalog(
+        table="public.plans",
+        entries={
+            "free": {
+                "description": "Free tier.",
+                "price": "$0",
+                "seats_included": 1,
+            },
+            "pro": {
+                "description": "Working teams.",
+                "price": "$12 / seat / month",
+                "seats_included": 5,
+                "pricing_page": "https://example.com/pro",
+            },
+            "legacy": {
+                "description": "Old plan, kept for grandfathered customers.",
+                "price": "$8 / seat / month",
+                "seats_included": 3,
+                "deprecated": True,
+            },
+        },
+    )
+    md = "\n".join(cat.render())
+
+    assert "## Plans" in md
+    # intro() comparison table appears once at the top.
+    assert "At a glance:" in md
+    assert "| Tier | Price | Seats |" in md
+    assert "| `free` | $0 | 1 |" in md
+    assert "| `pro` | $12 / seat / month | 5 |" in md
+    # entry_extras() — link only on entries with pricing_page.
+    assert "[See `pro` pricing](https://example.com/pro)" in md
+    assert "[See `free` pricing]" not in md
+    # entry_extras() — conditional callout only when deprecated.
+    assert "**Deprecated** — new signups are not allowed." in md
+    # auto-render still handles plain scalars.
+    assert "**Price:** $0" in md
+    assert "**Seats included:** 5" in md

@@ -1,21 +1,31 @@
-"""Custom entity types declared in `wlens.yml`.
+r"""Per-table catalogs of named row-instances.
 
-A custom entity loads data from a YAML file and renders a markdown section
-inlined into a target dbt source (or model) file.
+A `TableCatalog` describes the kinds of rows that can appear in a dbt table —
+analytics events, feature flags, customer attributes, marketing channels.
+Each catalog loads a YAML file of `{name: spec}` entries and renders a
+markdown section that gets inlined into the target table's docs.
 
-Built-in kinds:
-  - events: catalog of analytics events. Each event renders as
-    `### <event-name>` with a description, attribute list, and example SQL.
+Two ways to add a new kind:
 
-Adding a new kind: register a CustomEntity subclass in `_REGISTRY`. The
-subclass's `render()` returns the list of markdown lines to inject.
+1. **No code.** Declare it in `wlens.yml` with a `kind`, `title`, `source`
+   and `table`. The default render produces `## Title` → `### \`name\``
+   per entry with description + attributes.
+
+2. **One Python file.** Subclass `TableCatalog`, override `intro()` and/or
+   `entry_extras()`, and point `wlens.yml` at the file via `plugins: [...]`.
+   The subclass auto-registers on import.
+
+Two worked examples ship alongside (read-only, copy into your repo to
+use): `examples/plans.py` (mid-complexity) and `examples/events.py`
+(fully-featured, including a `from_config` override).
 """
 
 from __future__ import annotations
 
+import importlib.util
 import logging
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
+import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -26,115 +36,144 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-
-class CustomEntity(ABC):
-    """Base class for custom entity types."""
-
-    kind: str = ""
-    inline_into: str | None = None
-
-    @abstractmethod
-    def render(self) -> list[str]:
-        """Return the markdown lines to inject into the target entity's file."""
+_REGISTRY: dict[str, type["TableCatalog"]] = {}
 
 
 @dataclass
-class EventsCatalog(CustomEntity):
-    """A YAML catalog of analytics events.
+class TableCatalog:
+    """A catalog of named row-instances belonging to a table.
 
-    Expected YAML shape:
-
-        event-name:
-          description: What this event means.
-          attributes:
-            some-attr: Description of the attribute.
-            another:   Description.
+    Instantiable directly for catalogs that fit the standard render shape.
+    Subclass to add an `intro()` line or per-entry extras like an example
+    SQL block.
     """
 
-    kind: str = "events"
-    events: dict[str, dict[str, Any]] = None  # type: ignore[assignment]
-    source_table: str = ""                    # qualified name, e.g. "public.user_track_event"
-    event_column: str = "event"
-    data_column: str = "data"
-    core_columns: list[str] = None            # type: ignore[assignment]
-    head_limit: int = 5
-    inline_into: str | None = None
+    kind: str = ""
+    title: str = ""
+    table: str = ""
+    entries: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    def __init_subclass__(cls, **kw: Any) -> None:
+        super().__init_subclass__(**kw)
+        kind = getattr(cls, "kind", "")
+        if kind:
+            _REGISTRY[kind] = cls
+
+    @property
+    def inline_into(self) -> str:
+        return self.table
 
     def render(self) -> list[str]:
-        if not self.events:
+        if not self.entries:
             return []
-        lines: list[str] = ["## Events", ""]
-        lines.append(
-            f"The `{self.event_column}` column below is a filter on the event name. "
-            f"Attributes live in the `{self.data_column}` column and are accessed as "
-            f'`{self.data_column}."attr"::text`.'
-        )
-        lines.append("")
-        for event_name in sorted(self.events):
-            ev = self.events[event_name] or {}
-            lines.append(f"### `{event_name}`")
-            desc = (ev.get("description") or "").strip()
+        title = self.title or self.kind.replace("_", " ").title()
+        lines: list[str] = [f"## {title}", ""]
+        intro = self.intro()
+        if intro:
+            lines.extend(intro)
+            lines.append("")
+        for name in sorted(self.entries):
+            spec = self.entries[name] or {}
+            lines.append(f"### `{name}`")
+            desc = (spec.get("description") or "").strip()
             if desc:
                 lines.append("")
                 lines.append(desc)
-            attrs = ev.get("attributes") or {}
-            if attrs:
-                lines.append("")
-                lines.append("**Attributes:**")
-                for attr_name, attr_desc in sorted(attrs.items()):
-                    attr_desc = (attr_desc or "").strip()
-                    if attr_desc:
-                        lines.append(f"- `{attr_name}` — {attr_desc}")
-                    else:
-                        lines.append(f"- `{attr_name}`")
-            lines.extend(self._example_query(event_name, attrs))
+            for key, value in spec.items():
+                if key == "description":
+                    continue
+                lines.extend(_render_spec_field(key, value))
+            extras = self.entry_extras(name, spec)
+            if extras:
+                lines.extend(extras)
         return lines
 
-    def _example_query(self, event_name: str, attrs: dict) -> list[str]:
-        if not self.source_table:
-            return [""]
-        core = self.core_columns or []
-        attr_cols = [f'{self.data_column}."{a}"::text as "{a}"' for a in sorted(attrs.keys())]
-        query_cols = list(core) + attr_cols
-        if not query_cols:
-            return [""]
-        sql = (
-            "select\n    " + ",\n    ".join(query_cols) + "\n"
-            f"from {self.source_table}\n"
-            f"where {self.event_column} = '{event_name}'\n"
-            f"limit {self.head_limit}"
+    def intro(self) -> list[str]:
+        return []
+
+    def entry_extras(self, name: str, spec: dict[str, Any]) -> list[str]:
+        return []
+
+    @classmethod
+    def from_config(cls, entry: "EntityConfig", source_path: Path) -> "TableCatalog":
+        entries = yaml.safe_load(source_path.read_text()) or {}
+        x = entry.extra or {}
+        return cls(
+            kind=entry.kind,
+            title=x.get("title", ""),
+            table=entry.table or "",
+            entries=entries,
         )
-        return ["", "**Example query:**", "", "```sql", sql, "```", ""]
 
 
-def load_entities(config: "Config") -> list[CustomEntity]:
-    """Instantiate one CustomEntity per `entities:` entry in wlens.yml."""
-    out: list[CustomEntity] = []
+def load_entities(config: "Config") -> list[TableCatalog]:
+    """Import any `plugins:` files, then build one `TableCatalog` per `entities:` entry."""
+    _load_plugins(config.plugins, config.repo_root)
+    out: list[TableCatalog] = []
     for entry in config.entities:
-        entity = _build_entity(entry, config.repo_root)
-        if entity is not None:
-            out.append(entity)
+        catalog = _build_entity(entry, config.repo_root)
+        if catalog is not None:
+            out.append(catalog)
     return out
 
 
-def _build_entity(entry: "EntityConfig", repo_root: Path) -> CustomEntity | None:
+def _build_entity(entry: "EntityConfig", repo_root: Path) -> TableCatalog | None:
     source_path = (repo_root / entry.source).resolve()
     if not source_path.exists():
         logger.warning(f"custom entity source not found: {source_path} — skipping")
         return None
+    cls = _REGISTRY.get(entry.kind, TableCatalog)
+    return cls.from_config(entry, source_path)
 
-    if entry.kind == "events":
-        events = yaml.safe_load(source_path.read_text()) or {}
-        extra = entry.extra or {}
-        return EventsCatalog(
-            events=events,
-            inline_into=entry.inline_into,
-            source_table=extra.get("source_table", entry.inline_into or ""),
-            event_column=extra.get("event_column", "event"),
-            data_column=extra.get("data_column", "data"),
-            core_columns=list(extra.get("core_columns") or ["id", "created", "event"]),
-            head_limit=int(extra.get("head_limit", 5)),
-        )
 
-    logger.warning(f"unknown custom entity kind: {entry.kind!r} — skipping")
-    return None
+def _render_spec_field(key: str, value: Any) -> list[str]:
+    """Render one non-description spec field generically.
+
+    - dict → ``**Label:**`` heading then ``- key — value`` bullets (sorted).
+    - list → ``**Label:**`` heading then one bullet per item.
+    - string / int / float / bool → ``**Label:** value`` inline.
+    - Anything empty (None, "", {}, []) renders nothing.
+    """
+    label = key.replace("_", " ").capitalize()
+    if isinstance(value, dict):
+        if not value:
+            return []
+        lines = ["", f"**{label}:**"]
+        for k, v in sorted(value.items()):
+            v_str = v.strip() if isinstance(v, str) else "" if v is None else str(v)
+            lines.append(f"- `{k}` — {v_str}" if v_str else f"- `{k}`")
+        return lines
+    if isinstance(value, list):
+        if not value:
+            return []
+        return ["", f"**{label}:**", *[f"- {item}" for item in value]]
+    if isinstance(value, bool):
+        return ["", f"**{label}:** {'yes' if value else 'no'}"]
+    if isinstance(value, (int, float)):
+        return ["", f"**{label}:** {value}"]
+    if isinstance(value, str):
+        v = value.strip()
+        return ["", f"**{label}:** {v}"] if v else []
+    return []
+
+
+def _load_plugins(paths: list[str], repo_root: Path) -> None:
+    for raw_path in paths:
+        path = (repo_root / raw_path).resolve()
+        if not path.exists():
+            logger.warning(f"plugin file not found: {path} — skipping")
+            continue
+        try:
+            module_name = f"wlens_plugin_{path.stem}"
+            spec = importlib.util.spec_from_file_location(module_name, path)
+            if spec is None or spec.loader is None:
+                logger.warning(f"could not load plugin: {path}")
+                continue
+            module = importlib.util.module_from_spec(spec)
+            # Register before exec_module so @dataclass introspection (which
+            # looks up cls.__module__ in sys.modules) works for plugins that
+            # use `from __future__ import annotations`.
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+        except Exception as e:
+            logger.warning(f"plugin {path} raised on import: {e!r} — skipping")

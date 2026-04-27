@@ -24,7 +24,7 @@ from .preserve import read_manual_block
 
 if TYPE_CHECKING:
     from ..config import Config
-    from ..entities.loader import CustomEntity
+    from ..entities.loader import TableCatalog
     from ..executor.base import Executor
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ CELL_MAX_LEN = 80
 
 def render_and_write_all(
     entities: list[Entity],
-    custom_entities: list["CustomEntity"],
+    custom_entities: list["TableCatalog"],
     executor: "Executor | None",
     config: "Config",
 ) -> int:
@@ -66,7 +66,7 @@ def render_and_write_all(
 def _render_entity(
     entity: Entity,
     head_rows: list[dict],
-    custom_entity: "CustomEntity | None",
+    custom_entity: "TableCatalog | None",
 ) -> str:
     kind_label = "model" if entity.kind == "model" else "source"
     if custom_entity is not None:
@@ -193,9 +193,9 @@ def _write_file(path: Path, new_body: str) -> None:
 # ─── Inlining custom entities ───────────────────────────────────────────────
 
 
-def _inline_map(custom_entities: list["CustomEntity"]) -> dict[str, "CustomEntity"]:
+def _inline_map(custom_entities: list["TableCatalog"]) -> dict[str, "TableCatalog"]:
     """Map each `inline_into` slug to its custom entity."""
-    out: dict[str, "CustomEntity"] = {}
+    out: dict[str, "TableCatalog"] = {}
     for ce in custom_entities:
         if ce.inline_into:
             out[ce.inline_into] = ce

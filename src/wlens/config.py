@@ -23,10 +23,14 @@ Config shape:
       include_sample_rows: true
       sample_size: 5
 
+    plugins:
+      - ./wlens_catalogs.py            # optional: user-defined TableCatalog subclasses
+
     entities:
-      - kind: events
-        source: path/to/events.yml
-        inline_into: public.user_track_event
+      - kind: feature_flags             # auto-rendered (zero-code Option 1)
+        title: Feature flags
+        source: path/to/flags.yml
+        table: public.feature_flags
 
 Environment-variable references `${VAR}` are expanded at load time.
 """
@@ -79,7 +83,7 @@ class OutputConfig:
 class EntityConfig:
     kind: str
     source: str
-    inline_into: str | None = None
+    table: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -90,6 +94,7 @@ class Config:
     output: OutputConfig
     entities: list[EntityConfig]
     repo_root: Path
+    plugins: list[str] = field(default_factory=list)
 
     @property
     def output_dir(self) -> Path:
@@ -166,10 +171,12 @@ def _build_config(raw: dict, repo_root: Path) -> Config:
             EntityConfig(
                 kind=item["kind"],
                 source=item["source"],
-                inline_into=item.get("inline_into"),
-                extra={k: v for k, v in item.items() if k not in {"kind", "source", "inline_into"}},
+                table=item.get("table"),
+                extra={k: v for k, v in item.items() if k not in {"kind", "source", "table"}},
             )
         )
+
+    plugins = [str(p) for p in (raw.get("plugins") or [])]
 
     return Config(
         adapter=adapter,
@@ -177,6 +184,7 @@ def _build_config(raw: dict, repo_root: Path) -> Config:
         output=output,
         entities=entities,
         repo_root=repo_root,
+        plugins=plugins,
     )
 
 
