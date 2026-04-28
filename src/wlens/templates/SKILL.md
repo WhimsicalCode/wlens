@@ -27,7 +27,7 @@ join hints all live in the docs. Guessing is the most common failure mode.
 Pick the mode that matches the tools you have. In either mode, the
 underlying docs and rules are identical — only the access primitives differ.
 
-### Filesystem mode (Claude Code, Cursor, Continue, Codex, any shell-capable agent)
+### Filesystem mode (Claude Code, Gemini CLI, Cursor, Continue, Codex, Pi, any shell-capable agent)
 
 Every dbt model and source has a per-table markdown file under
 `wlens/schema/`. `wlens/schema/_index.md` lists them all alphabetically with

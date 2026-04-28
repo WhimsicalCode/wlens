@@ -2,13 +2,14 @@
 
 Subcommands:
 
-    wlens init       — drop wlens.yml + .claude/skills/wlens/SKILL.md into cwd
-    wlens generate   — read dbt artifacts, write per-table markdown into .claude/schema/
+    wlens init       — drop wlens.yml + skill files (.claude/, .agents/) into cwd
+    wlens generate   — read dbt artifacts, write per-table markdown into wlens/schema/
     wlens query      — execute a read-only SQL query against the configured warehouse
     wlens tag-pii    — scan dbt yml files and add `meta: pii: true` to likely-PII columns
-    wlens mcp        — start the wlens MCP server (team / demo modes)
-    wlens mcp-proxy  — stdio↔HTTP proxy (used by Claude Desktop to reach remote wlens)
-    wlens clean      — remove every file wlens has installed or generated in this repo
+    wlens mcp         — start the wlens MCP server (team / demo modes)
+    wlens mcp-proxy   — stdio↔HTTP proxy (used by Claude Desktop to reach remote wlens)
+    wlens mcp-clients — generate per-client MCP config files for a deployed wlens server
+    wlens clean       — remove every file wlens has installed or generated in this repo
 """
 
 from __future__ import annotations
@@ -82,6 +83,29 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_proxy.add_argument("url", help="Remote wlens MCP URL, e.g. https://abc.ngrok-free.app/mcp")
 
+    p_clients = sub.add_parser(
+        "mcp-clients",
+        help="Generate per-client MCP config files for a deployed wlens server.",
+    )
+    p_clients.add_argument(
+        "--url",
+        required=True,
+        metavar="URL",
+        help="Full MCP URL of your deployed wlens server, e.g. https://wlens.team.com/mcp.",
+    )
+    p_clients.add_argument(
+        "--token",
+        default=None,
+        metavar="TOKEN",
+        help="Bearer token. Defaults to the WLENS_AUTH_TOKEN env var.",
+    )
+    p_clients.add_argument(
+        "--out",
+        default=None,
+        metavar="DIR",
+        help="Output directory for the drop-in files (default: ./wlens/share/).",
+    )
+
     p_clean = sub.add_parser(
         "clean",
         help="Remove every file wlens installed or generated (wlens.yml, .claude/skills/wlens/, schema dir, cache).",
@@ -91,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
     p_clean.add_argument("--yes", "-y", action="store_true", help="Skip the confirmation prompt.")
 
     args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    _configure_logging()
 
     if args.command == "init":
         return _cmd_init(force=args.force)
@@ -124,6 +148,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "mcp-proxy":
         from .mcp import proxy
         return proxy.main([args.url])
+    if args.command == "mcp-clients":
+        return _cmd_mcp_clients(
+            url=args.url,
+            token=args.token,
+            out=Path(args.out) if args.out else None,
+        )
     if args.command == "clean":
         return _cmd_clean(
             config_path=Path(args.config) if args.config else None,
@@ -201,14 +231,44 @@ def _detect_dbt_project_dir(cwd: Path) -> str | None:
     return "." if rel == Path(".") else str(rel)
 
 
+class _CliFormatter(logging.Formatter):
+    """Drop the level prefix for INFO; keep it (lowercased) for warnings/errors.
+
+    Keeps user-facing output clean while letting warnings and errors stand out.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        msg = record.getMessage()
+        if record.levelno <= logging.INFO:
+            return msg
+        return f"{record.levelname.lower()}: {msg}"
+
+
+def _configure_logging() -> None:
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(_CliFormatter())
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    for h in list(root.handlers):
+        root.removeHandler(h)
+    root.addHandler(handler)
+
+
 def _cmd_init(*, force: bool) -> int:
     cwd = Path.cwd()
     detected_project_dir = _detect_dbt_project_dir(cwd)
     detected_duckdb = _detect_duckdb_file(cwd)
 
+    # Two skill destinations cover every native Agent Skills host today:
+    #   .claude/skills/      → Claude Code (doesn't scan .agents/)
+    #   .agents/skills/      → open standard (agentskills.io) — Gemini CLI,
+    #                          Codex CLI, Cursor, GitHub Copilot in VS Code,
+    #                          and any future tool that adopts the standard.
+    # Same template body, two write paths — agents discover wherever they look.
     targets = [
         (cwd / DEFAULT_CONFIG_FILENAME, "wlens.yml"),
         (cwd / ".claude" / "skills" / "wlens" / "SKILL.md", "SKILL.md"),
+        (cwd / ".agents" / "skills" / "wlens" / "SKILL.md", "SKILL.md"),
     ]
 
     for dest, template_name in targets:
@@ -434,10 +494,13 @@ def _cmd_clean(
         cfg_path = None
 
     # Everything wlens creates lives under `wlens/`, so nuke the whole dir in
-    # one go. The skill file lives under .claude/ by Claude Code convention.
+    # one go. Skill files live under .claude/ (Claude Code) and .agents/ (the
+    # open standard — Gemini CLI, Codex CLI, Cursor, …) — two well-known
+    # directories outside `wlens/` that we own a single subdir of.
     targets: list[Path] = [
         repo_root / "wlens",
         repo_root / ".claude" / "skills" / "wlens",
+        repo_root / ".agents" / "skills" / "wlens",
     ]
     # Back-compat: previous versions scattered files at the repo root. Clean
     # them up if they're still there.
@@ -491,7 +554,11 @@ def _cmd_clean(
         logger.info(f"removed {t}")
 
     # Tidy empty parent directories that were only there for wlens.
-    for parent in (repo_root / ".claude" / "skills", repo_root / ".claude"):
+    empty_parents = [
+        repo_root / ".claude" / "skills", repo_root / ".claude",
+        repo_root / ".agents" / "skills", repo_root / ".agents",
+    ]
+    for parent in empty_parents:
         if parent.exists() and parent.is_dir() and not any(parent.iterdir()):
             parent.rmdir()
             logger.info(f"removed empty {parent}")
@@ -539,6 +606,34 @@ def _cmd_mcp(
         no_auth=no_auth,
         allowed_hosts=allowed_hosts,
     )
+
+
+def _cmd_mcp_clients(*, url: str, token: str | None, out: Path | None) -> int:
+    """Generate per-client MCP config files for a deployed wlens server.
+
+    Wraps `write_share_files()` with a stable URL and token from a team
+    deployment, so the same drop-ins that `--dangerously-share` produces can
+    be handed to teammates pointing at your production server.
+    """
+    import os
+
+    from .mcp.auth import AUTH_ENV_VAR
+    from .mcp.share import write_share_files
+
+    resolved_token = token or os.environ.get(AUTH_ENV_VAR)
+    if not resolved_token:
+        logger.error("no token provided. Pass --token or set %s.", AUTH_ENV_VAR)
+        return 1
+
+    target_dir = out if out is not None else Path.cwd() / "wlens" / "share"
+    written = write_share_files(target_dir, mcp_url=url, token=resolved_token)
+
+    logger.info("wrote %d client config(s) to %s/:", len(written), target_dir)
+    for name, path in sorted(written.items()):
+        logger.info("  %s: %s", name, path.name)
+    logger.info("each file contains the bearer token; distribute carefully.")
+
+    return 0
 
 
 def _read_template(name: str) -> str:

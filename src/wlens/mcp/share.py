@@ -2,11 +2,15 @@
 
 Starts the wlens MCP server on localhost, opens a pyngrok tunnel, auto-
 generates a bearer token, and writes ready-to-use drop-in files for
-Claude Code and Claude Desktop:
+the major MCP clients:
 
-  - `.mcp.json`                       native HTTP (Claude Code)
+  - `.mcp.json`                       native HTTP (Claude Code; also reusable
+                                      for Cursor at .cursor/mcp.json, GitHub
+                                      Copilot at .vscode/mcp.json, etc.)
   - `claude_desktop_config.json`      proxied through `wlens mcp-proxy`
   - `wlens.mcpb`                      standalone Python bundle (double-click)
+  - `gemini_settings.json`            Gemini CLI / Antigravity (uses `httpUrl`)
+  - `codex_config.toml`               Codex CLI (TOML, [mcp_servers.wlens])
 
 Everything stays pure Python: the .mcpb vendors `mcp` + `httpx` + `anyio`
 into the bundle with `uv pip install --target`, so the recipient doesn't
@@ -117,19 +121,24 @@ def write_share_files(
     token: str,
     wlens_binary: str | None = None,
 ) -> dict[str, Path]:
-    """Write the Claude Code + Claude Desktop drop-in files into `share_dir`.
+    """Write the per-client drop-in files into `share_dir`.
 
     Returns a dict mapping short client names → absolute file paths.
 
-    Three artifacts:
-    - `.mcp.json`                  (Claude Code — native HTTP, no proxy needed)
-    - `claude_desktop_config.json` (Claude Desktop — proxied through `wlens mcp-proxy`)
-    - `wlens.mcpb`                 (Claude Desktop standalone bundle — double-click)
+    Five artifacts (one per format family — see docs/mcp.md for the per-client
+    paste-and-place table):
+    - `.mcp.json`                  Claude Code shape (HTTP, `url` + `headers`).
+                                   Universal donor: drops into Cursor, GitHub
+                                   Copilot in VS Code, Cline, Zed unchanged.
+    - `claude_desktop_config.json` Claude Desktop (stdio via `wlens mcp-proxy`).
+    - `wlens.mcpb`                 Claude Desktop standalone bundle (double-click).
+    - `gemini_settings.json`       Gemini CLI / Antigravity (HTTP, `httpUrl`).
+    - `codex_config.toml`          Codex CLI (TOML, `[mcp_servers.wlens]`).
 
     The `.mcpb` is pure-Python: we vendor `mcp` + `httpx` + `anyio` into
     `server/lib/` via uv/pip so the recipient needs nothing beyond Claude
     Desktop's bundled Python. If neither `uv` nor `pip` is available at
-    build time, the bundle is skipped (the two JSON files are still emitted).
+    build time, the bundle is skipped (the JSON/TOML files are still emitted).
     """
     share_dir.mkdir(parents=True, exist_ok=True)
     resolved_binary = wlens_binary or _resolve_wlens_binary()
@@ -142,7 +151,18 @@ def write_share_files(
         _claude_desktop_full_config(url=mcp_url, token=token, wlens_binary=resolved_binary) + "\n"
     )
 
-    out: dict[str, Path] = {"claude-code": code_path, "claude-desktop": desktop_path}
+    gemini_path = share_dir / "gemini_settings.json"
+    gemini_path.write_text(_gemini_mcp_json(url=mcp_url, token=token) + "\n")
+
+    codex_path = share_dir / "codex_config.toml"
+    codex_path.write_text(_codex_mcp_toml(url=mcp_url, token=token))
+
+    out: dict[str, Path] = {
+        "claude-code": code_path,
+        "claude-desktop": desktop_path,
+        "gemini": gemini_path,
+        "codex": codex_path,
+    }
 
     bundle_path = share_dir / "wlens.mcpb"
     try:
@@ -416,6 +436,8 @@ def _print_share_banner(
     mcp_url = f"{public_url}/mcp"
     code_path = written_files["claude-code"]
     desktop_path = written_files["claude-desktop"]
+    gemini_path = written_files["gemini"]
+    codex_path = written_files["codex"]
     mcpb_path = written_files.get("mcpb")
 
     banner = [
@@ -467,6 +489,29 @@ def _print_share_banner(
         "",
         _claude_code_cli_command(url=mcp_url, token=token),
         "",
+        "─── Gemini CLI / Antigravity ─────────────────────────────────────",
+        "",
+        f"  {gemini_path}",
+        "",
+        "  Gemini CLI: run",
+        "",
+        _gemini_cli_command(url=mcp_url, token=token),
+        "",
+        "  …or merge the JSON snippet into ~/.gemini/settings.json.",
+        "  Antigravity: Settings → MCP Servers → Manage → View raw config →",
+        "  paste the snippet from the file above.",
+        "",
+        "─── Codex CLI ────────────────────────────────────────────────────",
+        "",
+        f"  {codex_path}",
+        "",
+        "  Merge the [mcp_servers.wlens] block into ~/.codex/config.toml.",
+        "",
+        "─── Other clients (Cursor, VS Code Copilot, Windsurf, ChatGPT, …) ─",
+        "",
+        "  See docs/mcp.md for paste-ready snippets per client. Most accept",
+        "  the Claude Code .mcp.json shape unchanged at a different path.",
+        "",
         "Press Ctrl-C to stop the tunnel, delete the drop-in files, and shut down.",
         "",
     ]
@@ -476,6 +521,14 @@ def _print_share_banner(
 def _claude_code_cli_command(*, url: str, token: str) -> str:
     return (
         "  claude mcp add --transport http --scope project wlens \\\n"
+        f"    {url} \\\n"
+        f'    --header "Authorization: Bearer {token}"'
+    )
+
+
+def _gemini_cli_command(*, url: str, token: str) -> str:
+    return (
+        "  gemini mcp add --transport http wlens \\\n"
         f"    {url} \\\n"
         f'    --header "Authorization: Bearer {token}"'
     )
@@ -492,6 +545,38 @@ def _claude_code_mcp_json(*, url: str, token: str) -> str:
         }
     }
     return json.dumps(config, indent=2)
+
+
+def _gemini_mcp_json(*, url: str, token: str) -> str:
+    """Gemini CLI / Antigravity drop-in for ~/.gemini/settings.json.
+
+    Differs from the Claude Code shape by one field name: `httpUrl` instead
+    of `url` (and no `type` discriminator). Same `mcpServers` envelope, same
+    `headers` map.
+    """
+    config = {
+        "mcpServers": {
+            "wlens": {
+                "httpUrl": url,
+                "headers": {"Authorization": f"Bearer {token}"},
+            }
+        }
+    }
+    return json.dumps(config, indent=2)
+
+
+def _codex_mcp_toml(*, url: str, token: str) -> str:
+    """Codex CLI drop-in for ~/.codex/config.toml (or .codex/config.toml).
+
+    Codex uses TOML, not JSON. The HTTP transport schema is `url` plus an
+    `http_headers` inline map (per OpenAI's Codex config reference). We hand-
+    format rather than pull in a `tomli_w` dep — the structure is fixed.
+    """
+    return (
+        "[mcp_servers.wlens]\n"
+        f'url = "{url}"\n'
+        f'http_headers = {{ Authorization = "Bearer {token}" }}\n'
+    )
 
 
 def _claude_desktop_full_config(*, url: str, token: str, wlens_binary: str) -> str:
