@@ -115,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
     p_clean.add_argument("--yes", "-y", action="store_true", help="Skip the confirmation prompt.")
 
     args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    _configure_logging()
 
     if args.command == "init":
         return _cmd_init(force=args.force)
@@ -229,6 +229,29 @@ def _detect_dbt_project_dir(cwd: Path) -> str | None:
 
     rel = best.relative_to(cwd)
     return "." if rel == Path(".") else str(rel)
+
+
+class _CliFormatter(logging.Formatter):
+    """Drop the level prefix for INFO; keep it (lowercased) for warnings/errors.
+
+    Keeps user-facing output clean while letting warnings and errors stand out.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        msg = record.getMessage()
+        if record.levelno <= logging.INFO:
+            return msg
+        return f"{record.levelname.lower()}: {msg}"
+
+
+def _configure_logging() -> None:
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(_CliFormatter())
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    for h in list(root.handlers):
+        root.removeHandler(h)
+    root.addHandler(handler)
 
 
 def _cmd_init(*, force: bool) -> int:
