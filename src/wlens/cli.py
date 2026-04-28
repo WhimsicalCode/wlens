@@ -6,9 +6,10 @@ Subcommands:
     wlens generate   — read dbt artifacts, write per-table markdown into wlens/schema/
     wlens query      — execute a read-only SQL query against the configured warehouse
     wlens tag-pii    — scan dbt yml files and add `meta: pii: true` to likely-PII columns
-    wlens mcp        — start the wlens MCP server (team / demo modes)
-    wlens mcp-proxy  — stdio↔HTTP proxy (used by Claude Desktop to reach remote wlens)
-    wlens clean      — remove every file wlens has installed or generated in this repo
+    wlens mcp         — start the wlens MCP server (team / demo modes)
+    wlens mcp-proxy   — stdio↔HTTP proxy (used by Claude Desktop to reach remote wlens)
+    wlens mcp-clients — generate per-client MCP config files for a deployed wlens server
+    wlens clean       — remove every file wlens has installed or generated in this repo
 """
 
 from __future__ import annotations
@@ -82,6 +83,29 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_proxy.add_argument("url", help="Remote wlens MCP URL, e.g. https://abc.ngrok-free.app/mcp")
 
+    p_clients = sub.add_parser(
+        "mcp-clients",
+        help="Generate per-client MCP config files for a deployed wlens server.",
+    )
+    p_clients.add_argument(
+        "--url",
+        required=True,
+        metavar="URL",
+        help="Full MCP URL of your deployed wlens server, e.g. https://wlens.team.com/mcp.",
+    )
+    p_clients.add_argument(
+        "--token",
+        default=None,
+        metavar="TOKEN",
+        help="Bearer token. Defaults to the WLENS_AUTH_TOKEN env var.",
+    )
+    p_clients.add_argument(
+        "--out",
+        default=None,
+        metavar="DIR",
+        help="Output directory for the drop-in files (default: ./wlens/share/).",
+    )
+
     p_clean = sub.add_parser(
         "clean",
         help="Remove every file wlens installed or generated (wlens.yml, .claude/skills/wlens/, schema dir, cache).",
@@ -124,6 +148,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "mcp-proxy":
         from .mcp import proxy
         return proxy.main([args.url])
+    if args.command == "mcp-clients":
+        return _cmd_mcp_clients(
+            url=args.url,
+            token=args.token,
+            out=Path(args.out) if args.out else None,
+        )
     if args.command == "clean":
         return _cmd_clean(
             config_path=Path(args.config) if args.config else None,
@@ -553,6 +583,34 @@ def _cmd_mcp(
         no_auth=no_auth,
         allowed_hosts=allowed_hosts,
     )
+
+
+def _cmd_mcp_clients(*, url: str, token: str | None, out: Path | None) -> int:
+    """Generate per-client MCP config files for a deployed wlens server.
+
+    Wraps `write_share_files()` with a stable URL and token from a team
+    deployment, so the same drop-ins that `--dangerously-share` produces can
+    be handed to teammates pointing at your production server.
+    """
+    import os
+
+    from .mcp.auth import AUTH_ENV_VAR
+    from .mcp.share import write_share_files
+
+    resolved_token = token or os.environ.get(AUTH_ENV_VAR)
+    if not resolved_token:
+        logger.error("no token provided. Pass --token or set %s.", AUTH_ENV_VAR)
+        return 1
+
+    target_dir = out if out is not None else Path.cwd() / "wlens" / "share"
+    written = write_share_files(target_dir, mcp_url=url, token=resolved_token)
+
+    logger.info("wrote %d client config(s) to %s/:", len(written), target_dir)
+    for name, path in sorted(written.items()):
+        logger.info("  %s: %s", name, path.name)
+    logger.info("each file contains the bearer token; distribute carefully.")
+
+    return 0
 
 
 def _read_template(name: str) -> str:

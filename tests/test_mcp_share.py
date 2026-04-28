@@ -204,6 +204,64 @@ def test_write_share_files_is_idempotent(tmp_path: Path, monkeypatch):
     assert codex["mcp_servers"]["wlens"]["http_headers"]["Authorization"] == "Bearer second-token"
 
 
+def test_cli_mcp_clients_uses_env_token(tmp_path: Path, monkeypatch):
+    """`wlens mcp-clients --url ...` defaults the token to WLENS_AUTH_TOKEN."""
+    import wlens.mcp.share as share_mod
+
+    monkeypatch.setattr(share_mod, "_vendor_python_deps", lambda target_dir: target_dir.mkdir(exist_ok=True))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("WLENS_AUTH_TOKEN", "env-token-xyz")
+
+    from wlens.cli import main
+    rc = main(["mcp-clients", "--url", "https://wlens.team.com/mcp"])
+    assert rc == 0
+
+    out_dir = tmp_path / "wlens" / "share"
+    parsed = json.loads((out_dir / ".mcp.json").read_text())
+    assert parsed["mcpServers"]["wlens"]["headers"]["Authorization"] == "Bearer env-token-xyz"
+    assert parsed["mcpServers"]["wlens"]["url"] == "https://wlens.team.com/mcp"
+
+
+def test_cli_mcp_clients_explicit_token_overrides_env(tmp_path: Path, monkeypatch):
+    import wlens.mcp.share as share_mod
+
+    monkeypatch.setattr(share_mod, "_vendor_python_deps", lambda target_dir: target_dir.mkdir(exist_ok=True))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("WLENS_AUTH_TOKEN", "env-token")
+
+    from wlens.cli import main
+    rc = main(["mcp-clients", "--url", "https://wlens.team.com/mcp", "--token", "explicit-token"])
+    assert rc == 0
+
+    parsed = json.loads((tmp_path / "wlens" / "share" / ".mcp.json").read_text())
+    assert parsed["mcpServers"]["wlens"]["headers"]["Authorization"] == "Bearer explicit-token"
+
+
+def test_cli_mcp_clients_fails_without_token(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("WLENS_AUTH_TOKEN", raising=False)
+
+    from wlens.cli import main
+    rc = main(["mcp-clients", "--url", "https://wlens.team.com/mcp"])
+    assert rc == 1
+    assert not (tmp_path / "wlens" / "share").exists()
+
+
+def test_cli_mcp_clients_custom_out_dir(tmp_path: Path, monkeypatch):
+    import wlens.mcp.share as share_mod
+
+    monkeypatch.setattr(share_mod, "_vendor_python_deps", lambda target_dir: target_dir.mkdir(exist_ok=True))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("WLENS_AUTH_TOKEN", "tok")
+
+    from wlens.cli import main
+    custom = tmp_path / "elsewhere"
+    rc = main(["mcp-clients", "--url", "https://wlens.team.com/mcp", "--out", str(custom)])
+    assert rc == 0
+    assert (custom / ".mcp.json").exists()
+    assert not (tmp_path / "wlens" / "share").exists()
+
+
 def test_share_falls_back_to_wlens_string_when_binary_missing(tmp_path: Path, monkeypatch):
     """If shutil.which can't find wlens, we write the literal string "wlens"."""
     import wlens.mcp.share as share_mod
