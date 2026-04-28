@@ -21,9 +21,12 @@ def _wlens_layout(tmp_path: Path) -> None:
               dir: .claude/schema
         """).lstrip()
     )
-    skill_dir = tmp_path / ".claude" / "skills" / "wlens"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text("---\nname: wlens\n---\n")
+    # `wlens init` plants the skill into two discovery paths: .claude/ for
+    # Claude Code and .agents/ for the open standard (Gemini CLI, Codex, …).
+    for top in (".claude", ".agents"):
+        skill_dir = tmp_path / top / "skills" / "wlens"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("---\nname: wlens\n---\n")
     schema = tmp_path / ".claude" / "schema"
     schema.mkdir(parents=True)
     (schema / "_index.md").write_text("# index\n")
@@ -45,12 +48,35 @@ def test_clean_removes_all_wlens_files(tmp_path: Path, monkeypatch):
 
     assert not (tmp_path / "wlens.yml").exists()
     assert not (tmp_path / ".claude" / "skills" / "wlens").exists()
+    assert not (tmp_path / ".agents" / "skills" / "wlens").exists()
     assert not (tmp_path / ".claude" / "schema").exists()
     assert not (tmp_path / ".wlens-cache").exists()
     assert not (tmp_path / "wlens-share").exists()
-    # Empty parents are tidied.
+    # Empty parents are tidied across both skill hosts.
     assert not (tmp_path / ".claude" / "skills").exists()
     assert not (tmp_path / ".claude").exists()
+    assert not (tmp_path / ".agents" / "skills").exists()
+    assert not (tmp_path / ".agents").exists()
+
+
+def test_clean_preserves_unrelated_agents_content(tmp_path: Path, monkeypatch):
+    """The same defence-in-depth that protects .claude/skills also protects
+    .agents/skills: a foreign skill in the parent dir must survive."""
+    monkeypatch.chdir(tmp_path)
+    _wlens_layout(tmp_path)
+
+    # Plant an unrelated skill under .agents/skills/.
+    other_agents = tmp_path / ".agents" / "skills" / "team-skill"
+    other_agents.mkdir(parents=True)
+    (other_agents / "SKILL.md").write_text("team\n")
+
+    assert main(["clean", "--yes"]) == 0
+
+    # Foreign skill survives…
+    assert other_agents.exists()
+    # …and so do its non-empty parents.
+    assert (tmp_path / ".agents" / "skills").exists()
+    assert (tmp_path / ".agents").exists()
 
 
 def test_clean_preserves_unrelated_claude_content(tmp_path: Path, monkeypatch):

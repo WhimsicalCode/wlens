@@ -10,6 +10,9 @@ from wlens.mcp.share import (
     _claude_code_cli_command,
     _claude_code_mcp_json,
     _claude_desktop_full_config,
+    _codex_mcp_toml,
+    _gemini_cli_command,
+    _gemini_mcp_json,
     _host_from_url,
     _mcpb_main_py,
     _mcpb_manifest,
@@ -55,6 +58,39 @@ def test_claude_code_cli_command_shape():
     assert f'"Authorization: Bearer {TOKEN}"' in cmd
 
 
+def test_gemini_mcp_json_uses_httpUrl():
+    """Gemini CLI / Antigravity differs from Claude Code by one field: `httpUrl`
+    instead of `url` + `type: "http"`. Same `mcpServers` envelope otherwise."""
+    parsed = json.loads(_gemini_mcp_json(url=URL, token=TOKEN))
+    entry = parsed["mcpServers"]["wlens"]
+    assert entry["httpUrl"] == URL
+    assert entry["headers"] == {"Authorization": f"Bearer {TOKEN}"}
+    # Gemini CLI doesn't use `type` or `url` for HTTP MCP servers.
+    assert "type" not in entry
+    assert "url" not in entry
+    assert "command" not in entry
+
+
+def test_gemini_cli_command_shape():
+    cmd = _gemini_cli_command(url=URL, token=TOKEN)
+    assert "gemini mcp add" in cmd
+    assert "--transport http" in cmd
+    assert URL in cmd
+    assert f'"Authorization: Bearer {TOKEN}"' in cmd
+
+
+def test_codex_mcp_toml_shape():
+    """Codex CLI uses TOML with `[mcp_servers.<name>]`, `url`, and an inline
+    `http_headers` map (per OpenAI's Codex config reference)."""
+    text = _codex_mcp_toml(url=URL, token=TOKEN)
+    assert "[mcp_servers.wlens]" in text
+    assert f'url = "{URL}"' in text
+    assert f'Authorization = "Bearer {TOKEN}"' in text
+    assert "http_headers" in text
+    # No JSON artefacts (curly braces around the table, etc.) leaking in.
+    assert not text.startswith("{")
+
+
 def test_host_from_url_strips_scheme_and_path():
     assert _host_from_url("https://abc.ngrok.io") == ["abc.ngrok.io", "abc.ngrok.io:*"]
     assert _host_from_url("https://abc.ngrok-free.app/mcp") == [
@@ -67,7 +103,7 @@ def test_host_from_url_strips_scheme_and_path():
 
 
 def test_write_share_files_creates_json_configs(tmp_path: Path, monkeypatch):
-    """JSON drop-ins are unconditional. The .mcpb is opportunistic."""
+    """JSON / TOML drop-ins are unconditional. The .mcpb is opportunistic."""
     # Stub out vendoring so this test doesn't hit the network / pip.
     import wlens.mcp.share as share_mod
 
@@ -78,8 +114,43 @@ def test_write_share_files_creates_json_configs(tmp_path: Path, monkeypatch):
 
     assert written["claude-code"] == share_dir / ".mcp.json"
     assert written["claude-desktop"] == share_dir / "claude_desktop_config.json"
+    assert written["gemini"] == share_dir / "gemini_settings.json"
+    assert written["codex"] == share_dir / "codex_config.toml"
     assert written["claude-code"].exists()
     assert written["claude-desktop"].exists()
+    assert written["gemini"].exists()
+    assert written["codex"].exists()
+
+
+def test_written_gemini_file_uses_httpUrl(tmp_path: Path, monkeypatch):
+    import wlens.mcp.share as share_mod
+
+    monkeypatch.setattr(share_mod, "_vendor_python_deps", lambda target_dir: target_dir.mkdir(exist_ok=True))
+
+    share_dir = tmp_path / "wlens-share"
+    written = write_share_files(share_dir, mcp_url=URL, token=TOKEN, wlens_binary=WLENS_BIN)
+
+    parsed = json.loads(written["gemini"].read_text())
+    entry = parsed["mcpServers"]["wlens"]
+    assert entry["httpUrl"] == URL
+    assert entry["headers"]["Authorization"] == f"Bearer {TOKEN}"
+
+
+def test_written_codex_file_is_valid_toml(tmp_path: Path, monkeypatch):
+    """Round-trip the Codex TOML through tomllib so we know it parses."""
+    import tomllib
+
+    import wlens.mcp.share as share_mod
+
+    monkeypatch.setattr(share_mod, "_vendor_python_deps", lambda target_dir: target_dir.mkdir(exist_ok=True))
+
+    share_dir = tmp_path / "wlens-share"
+    written = write_share_files(share_dir, mcp_url=URL, token=TOKEN, wlens_binary=WLENS_BIN)
+
+    parsed = tomllib.loads(written["codex"].read_text())
+    server = parsed["mcp_servers"]["wlens"]
+    assert server["url"] == URL
+    assert server["http_headers"]["Authorization"] == f"Bearer {TOKEN}"
 
 
 def test_written_claude_code_file_is_standalone_mcp_json(tmp_path: Path, monkeypatch):
@@ -113,6 +184,8 @@ def test_written_claude_desktop_file_uses_python_proxy(tmp_path: Path, monkeypat
 
 
 def test_write_share_files_is_idempotent(tmp_path: Path, monkeypatch):
+    import tomllib
+
     import wlens.mcp.share as share_mod
 
     monkeypatch.setattr(share_mod, "_vendor_python_deps", lambda target_dir: target_dir.mkdir(exist_ok=True))
@@ -125,6 +198,10 @@ def test_write_share_files_is_idempotent(tmp_path: Path, monkeypatch):
     assert parsed["mcpServers"]["wlens"]["headers"]["Authorization"] == "Bearer second-token"
     desktop = json.loads((share_dir / "claude_desktop_config.json").read_text())
     assert desktop["mcpServers"]["wlens"]["env"]["WLENS_AUTH_TOKEN"] == "second-token"
+    gemini = json.loads((share_dir / "gemini_settings.json").read_text())
+    assert gemini["mcpServers"]["wlens"]["headers"]["Authorization"] == "Bearer second-token"
+    codex = tomllib.loads((share_dir / "codex_config.toml").read_text())
+    assert codex["mcp_servers"]["wlens"]["http_headers"]["Authorization"] == "Bearer second-token"
 
 
 def test_share_falls_back_to_wlens_string_when_binary_missing(tmp_path: Path, monkeypatch):

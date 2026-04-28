@@ -2,8 +2,8 @@
 
 Subcommands:
 
-    wlens init       — drop wlens.yml + .claude/skills/wlens/SKILL.md into cwd
-    wlens generate   — read dbt artifacts, write per-table markdown into .claude/schema/
+    wlens init       — drop wlens.yml + skill files (.claude/, .agents/) into cwd
+    wlens generate   — read dbt artifacts, write per-table markdown into wlens/schema/
     wlens query      — execute a read-only SQL query against the configured warehouse
     wlens tag-pii    — scan dbt yml files and add `meta: pii: true` to likely-PII columns
     wlens mcp        — start the wlens MCP server (team / demo modes)
@@ -206,9 +206,16 @@ def _cmd_init(*, force: bool) -> int:
     detected_project_dir = _detect_dbt_project_dir(cwd)
     detected_duckdb = _detect_duckdb_file(cwd)
 
+    # Two skill destinations cover every native Agent Skills host today:
+    #   .claude/skills/      → Claude Code (doesn't scan .agents/)
+    #   .agents/skills/      → open standard (agentskills.io) — Gemini CLI,
+    #                          Codex CLI, Cursor, GitHub Copilot in VS Code,
+    #                          and any future tool that adopts the standard.
+    # Same template body, two write paths — agents discover wherever they look.
     targets = [
         (cwd / DEFAULT_CONFIG_FILENAME, "wlens.yml"),
         (cwd / ".claude" / "skills" / "wlens" / "SKILL.md", "SKILL.md"),
+        (cwd / ".agents" / "skills" / "wlens" / "SKILL.md", "SKILL.md"),
     ]
 
     for dest, template_name in targets:
@@ -434,10 +441,13 @@ def _cmd_clean(
         cfg_path = None
 
     # Everything wlens creates lives under `wlens/`, so nuke the whole dir in
-    # one go. The skill file lives under .claude/ by Claude Code convention.
+    # one go. Skill files live under .claude/ (Claude Code) and .agents/ (the
+    # open standard — Gemini CLI, Codex CLI, Cursor, …) — two well-known
+    # directories outside `wlens/` that we own a single subdir of.
     targets: list[Path] = [
         repo_root / "wlens",
         repo_root / ".claude" / "skills" / "wlens",
+        repo_root / ".agents" / "skills" / "wlens",
     ]
     # Back-compat: previous versions scattered files at the repo root. Clean
     # them up if they're still there.
@@ -491,7 +501,11 @@ def _cmd_clean(
         logger.info(f"removed {t}")
 
     # Tidy empty parent directories that were only there for wlens.
-    for parent in (repo_root / ".claude" / "skills", repo_root / ".claude"):
+    empty_parents = [
+        repo_root / ".claude" / "skills", repo_root / ".claude",
+        repo_root / ".agents" / "skills", repo_root / ".agents",
+    ]
+    for parent in empty_parents:
         if parent.exists() and parent.is_dir() and not any(parent.iterdir()):
             parent.rmdir()
             logger.info(f"removed empty {parent}")

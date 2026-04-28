@@ -34,6 +34,26 @@ def test_init_writes_starter_files(tmp_path: Path, monkeypatch):
     assert ".claude/schema/" not in skill
 
 
+def test_init_writes_skill_to_two_locations(tmp_path: Path, monkeypatch):
+    """One template, two discovery paths: Claude Code (`.claude/skills/`) and
+    the open standard `.agents/skills/` — which Gemini CLI, Codex CLI, Cursor,
+    and GitHub Copilot in VS Code all scan."""
+    monkeypatch.chdir(tmp_path)
+    main(["init"])
+
+    claude_skill = tmp_path / ".claude" / "skills" / "wlens" / "SKILL.md"
+    agents_skill = tmp_path / ".agents" / "skills" / "wlens" / "SKILL.md"
+
+    assert claude_skill.exists()
+    assert agents_skill.exists()
+    # Gemini CLI scans .agents/skills/ only, NOT .gemini/skills/.
+    assert not (tmp_path / ".gemini").exists()
+
+    # Both files are byte-identical: same template, two destinations.
+    body = claude_skill.read_text()
+    assert agents_skill.read_text() == body
+
+
 def test_init_writes_wlens_gitignore(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     main(["init"])
