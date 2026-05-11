@@ -15,3 +15,13 @@ executor:
   #   database: ${WLENS_DB_NAME}
   #   user:     ${WLENS_DB_USER}
   #   password: ${WLENS_DB_PASSWORD}
+
+# Value-level scrubbing of sample-row cells.
+# Defaults always on: email, IPv4, phone → <email> / <ip> / <phone>.
+# Append project-specific patterns here. A UUID rule is a common addition:
+# output:
+#   obfuscate:
+#     - pattern: '\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b'
+#       replacement: '<uuid>'
+#     - pattern: '\bemp-\d{6}\b'
+#       replacement: '<employee_id>'

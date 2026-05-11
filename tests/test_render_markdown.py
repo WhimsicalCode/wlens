@@ -29,6 +29,66 @@ def _setup_project(tmp_path: Path, dbt_project: Path, extra: str = "") -> Path:
     return cfg_path
 
 
+class _StubExecutor:
+    """Minimal `run_direct(sql)` stand-in for sample-row fetching."""
+
+    def __init__(self, headers: list[str], rows: list[tuple]):
+        self._headers = headers
+        self._rows = rows
+
+    def run_direct(self, sql: str):  # noqa: ARG002 — sql ignored, fixed payload
+        return self._headers, self._rows, False
+
+
+def test_sample_rows_obfuscate_embedded_pii(tmp_path, dbt_project):
+    uuid_pattern = (
+        r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+        r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+    )
+    cfg_path = tmp_path / "wlens.yml"
+    cfg_path.write_text(
+        textwrap.dedent(f"""
+            adapter:
+              kind: dbt
+              project_dir: {dbt_project.relative_to(tmp_path)}
+              include_prefixes: [dim_]
+            output:
+              dir: .claude/schema
+              include_sample_rows: true
+              sample_size: 2
+              obfuscate:
+                - pattern: '{uuid_pattern}'
+                  replacement: '<uuid>'
+                - pattern: '\\bemp-\\d{{6}}\\b'
+                  replacement: '<employee_id>'
+        """).lstrip()
+    )
+    cfg = load_config(cfg_path)
+    entities = [e for e in DbtAdapter(cfg).list_entities() if e.slug == "prod.dim_widget"]
+    assert entities, "expected dim_widget in fixtures"
+
+    executor = _StubExecutor(
+        headers=["widget_id", "color", "notes"],
+        rows=[
+            (1, "red", "owner foo@bar.com id 550e8400-e29b-41d4-a716-446655440000"),
+            (2, "blue", "ticket from 10.0.0.5 by emp-123456"),
+        ],
+    )
+    render_and_write_all(entities, [], executor, cfg)
+
+    md = (cfg.output_dir / "prod.dim_widget.md").read_text()
+    # Built-in patterns scrubbed.
+    assert "foo@bar.com" not in md
+    assert "10.0.0.5" not in md
+    assert "<email>" in md
+    assert "<ip>" in md
+    # User-supplied extras applied.
+    assert "550e8400" not in md
+    assert "<uuid>" in md
+    assert "emp-123456" not in md
+    assert "<employee_id>" in md
+
+
 def test_renders_one_file_per_entity(tmp_path, dbt_project):
     cfg = load_config(_setup_project(tmp_path, dbt_project))
     entities = DbtAdapter(cfg).list_entities()

@@ -13,12 +13,14 @@ the first section always contains the long-form description.
 
 from __future__ import annotations
 
+import functools
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from ..adapters.base import Column, Entity, Parent
+from .obfuscate import compile_rules, obfuscate
 from .pii import PII_REDACTED, pii_column_names
 from .preserve import read_manual_block
 
@@ -48,10 +50,15 @@ def render_and_write_all(
 
     inline_map = _inline_map(custom_entities)
     sample_size = config.output.sample_size if config.output.include_sample_rows else 0
+    obfuscate_value = functools.partial(
+        obfuscate, rules=compile_rules(config.output.obfuscate)
+    )
 
     for entity in entities:
         head_rows = _fetch_head(executor, entity, sample_size) if executor else []
-        body = _render_entity(entity, head_rows, inline_map.get(entity.slug))
+        body = _render_entity(
+            entity, head_rows, inline_map.get(entity.slug), obfuscate_value
+        )
         _write_file(output_dir / entity.filename, body)
 
     index_path = output_dir / "_index.md"
@@ -67,6 +74,7 @@ def _render_entity(
     entity: Entity,
     head_rows: list[dict],
     custom_entity: "TableCatalog | None",
+    obfuscate_value: Callable[[str], str],
 ) -> str:
     kind_label = "model" if entity.kind == "model" else "source"
     if custom_entity is not None:
@@ -80,7 +88,9 @@ def _render_entity(
     if custom_entity is not None:
         lines.extend(custom_entity.render())
     lines.extend(_render_parents(entity.parents))
-    lines.extend(_render_sample_rows(head_rows, pii_column_names(entity.columns)))
+    lines.extend(
+        _render_sample_rows(head_rows, pii_column_names(entity.columns), obfuscate_value)
+    )
     lines.extend(_render_compiled_sql(entity.compiled_sql))
     return "\n".join(lines).rstrip() + "\n"
 
@@ -115,7 +125,11 @@ def _render_parents(parents: list[Parent]) -> list[str]:
     return lines
 
 
-def _render_sample_rows(head_rows: list[dict], pii_columns: set[str]) -> list[str]:
+def _render_sample_rows(
+    head_rows: list[dict],
+    pii_columns: set[str],
+    obfuscate_value: Callable[[str], str],
+) -> list[str]:
     """Column-first (transposed) rendering: one bullet per column, pipe-separated values."""
     if not head_rows:
         return []
@@ -126,7 +140,7 @@ def _render_sample_rows(head_rows: list[dict], pii_columns: set[str]) -> list[st
         if c in pii_columns:
             values = " | ".join([PII_REDACTED] * n_rows)
         else:
-            values = " | ".join(_cell(row.get(c)) for row in head_rows)
+            values = " | ".join(_cell(row.get(c), obfuscate_value) for row in head_rows)
         lines.append(f"- `{c}`: {values}")
     lines.append("")
     return lines
@@ -236,10 +250,12 @@ def _truncate(value) -> str | None:
     return s
 
 
-def _cell(v) -> str:
+def _cell(v, obfuscate_value: Callable[[str], str]) -> str:
     if v is None:
         return "NULL"
     s = str(v).replace("|", "\\|").replace("\n", " ")
+    # Obfuscate before truncation so long emails/URLs aren't cut mid-pattern.
+    s = obfuscate_value(s)
     if len(s) > CELL_MAX_LEN:
         s = s[:CELL_MAX_LEN] + "…"
     return s
