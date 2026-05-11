@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -173,13 +174,24 @@ def _build_test_index(manifest: dict) -> dict[tuple[str, str | None], list[str]]
            - "accepted_values(values=['shipped','completed','pending'])"
     """
     idx: dict[tuple[str, str | None], list[str]] = {}
+    sources_by_name = {
+        f"{node['source_name']}.{node['name']}": node_id
+        for node_id, node in manifest.get("sources", {}).items()
+        if "source_name" in node and "name" in node
+    }
+    models_by_name = {
+        node["name"]: node_id
+        for node_id, node in manifest.get("nodes", {}).items()
+        if node.get("resource_type") == "model" and "name" in node
+    }
+
     for node in manifest.get("nodes", {}).values():
         if node.get("resource_type") != "test":
             continue
-        attached = node.get("attached_node")
+        attached = node.get("attached_node") or _resolve_attached_from_metadata(
+            node, sources_by_name, models_by_name
+        )
         if not attached:
-            # Older manifests: derive from refs/sources. The first model/source
-            # in depends_on.nodes is usually the target.
             deps = (node.get("depends_on") or {}).get("nodes") or []
             attached = next(
                 (d for d in deps if d.startswith(("model.", "source."))),
@@ -188,10 +200,35 @@ def _build_test_index(manifest: dict) -> dict[tuple[str, str | None], list[str]]
         if not attached:
             continue
         idx.setdefault((attached, node.get("column_name")), []).append(_format_test(node))
-    # Stable ordering makes markdown diffs boring.
     for tests in idx.values():
         tests.sort()
     return idx
+
+
+_MODEL_TEMPLATE_SOURCE = re.compile(r"source\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)")
+_MODEL_TEMPLATE_REF = re.compile(r"ref\(\s*'([^']+)'\s*\)")
+
+
+def _resolve_attached_from_metadata(
+    test_node: dict,
+    sources_by_name: dict[str, str],
+    models_by_name: dict[str, str],
+) -> str | None:
+    """For tests with `attached_node: None`, parse `test_metadata.kwargs.model`
+    to find the node where the test is defined. The kwarg looks like
+    `{{ get_where_subquery(source('acme', 'Loss_Payment')) }}` or
+    `{{ get_where_subquery(ref('my_model')) }}`.
+    """
+    template = (test_node.get("test_metadata") or {}).get("kwargs", {}).get("model")
+    if not isinstance(template, str):
+        return None
+    match = _MODEL_TEMPLATE_SOURCE.search(template)
+    if match:
+        return sources_by_name.get(f"{match.group(1)}.{match.group(2)}")
+    match = _MODEL_TEMPLATE_REF.search(template)
+    if match:
+        return models_by_name.get(match.group(1))
+    return None
 
 
 def _format_test(test_node: dict) -> str:

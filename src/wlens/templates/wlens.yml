@@ -15,3 +15,18 @@ executor:
   #   database: ${WLENS_DB_NAME}
   #   user:     ${WLENS_DB_USER}
   #   password: ${WLENS_DB_PASSWORD}
+
+# Value-level scrubbing of sample-row cells.
+# Defaults always on: email, IPv4, phone → <email> / <ip> / <phone>.
+# Append project-specific patterns here. Common additions:
+# output:
+#   obfuscate:
+#     # UUIDs (warehouse primary keys — opt in if you don't want them in docs)
+#     - pattern: '\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b'
+#       replacement: '<uuid>'
+#     # Stripe object IDs (cus_, sub_, in_, pi_, ch_, pm_, prod_, price_, inv_)
+#     - pattern: '\b(cus|sub|in|pi|ch|pm|prod|price|inv)_[A-Za-z0-9]+\b'
+#       replacement: '<stripe_id>'
+#     # Project-specific identifier example
+#     - pattern: '\bemp-\d{6}\b'
+#       replacement: '<employee_id>'

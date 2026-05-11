@@ -77,6 +77,9 @@ class OutputConfig:
     dir: str = DEFAULT_OUTPUT_DIR
     include_sample_rows: bool = True
     sample_size: int = DEFAULT_SAMPLE_SIZE
+    # Extra value-level obfuscation rules appended to the built-in defaults
+    # (email, UUID, URL, IP, phone). Each item: {pattern, replacement}.
+    obfuscate: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -159,6 +162,7 @@ def _build_config(raw: dict, repo_root: Path) -> Config:
         dir=output_raw.get("dir", DEFAULT_OUTPUT_DIR),
         include_sample_rows=bool(output_raw.get("include_sample_rows", True)),
         sample_size=int(output_raw.get("sample_size", DEFAULT_SAMPLE_SIZE)),
+        obfuscate=list(output_raw.get("obfuscate") or []),
     )
 
     entities: list[EntityConfig] = []
