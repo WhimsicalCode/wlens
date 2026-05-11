@@ -38,15 +38,23 @@ DEFAULT_RULES: tuple[ObfuscationRule, ...] = (
         pattern=re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
         replacement="<ip>",
     ),
+    # Phone is split into two rules so neither matches DD-MM-YYYY / MM-DD-YYYY
+    # date strings. Real phones have ≥10 digits; common date formats have ≤8.
     ObfuscationRule(
-        # Three numeric groups separated by space/dot/dash, last 3-9 digits.
-        # Covers `+1 555-123-4567`, `(555) 123-4567`, `555-123-4567`,
-        # `+44 20 7946 0958`. Won't match ISO dates (last group too short)
-        # or bare 10-digit ids (no separators).
-        name="phone",
+        # International with explicit +country-code: `+1 555-123-4567`,
+        # `+44 20 7946 0958`. The leading `+` is the disambiguator.
+        name="phone_intl",
         pattern=re.compile(
-            r"(?:\+\d{1,3}[\s.-]?)?\(?\d{1,4}\)?[\s.-]\d{1,4}[\s.-]\d{3,9}"
+            r"\+\d{1,3}[\s.-]?\d{1,4}[\s.-]?\d{2,9}[\s.-]?\d{2,9}"
         ),
+        replacement="<phone>",
+    ),
+    ObfuscationRule(
+        # North American 3-3-4 shape: `(555) 123-4567`, `555-123-4567`,
+        # `555.123.4567`. The strict 3-3-4 grouping rules out date formats,
+        # whose leading day/month group is 1-2 digits.
+        name="phone_na",
+        pattern=re.compile(r"\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}"),
         replacement="<phone>",
     ),
 )

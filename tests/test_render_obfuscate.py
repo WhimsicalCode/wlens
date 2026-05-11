@@ -54,9 +54,20 @@ def test_version_string_not_phone():
     assert obfuscate("upgraded to v2.1.0 today") == "upgraded to v2.1.0 today"
 
 
-def test_iso_date_not_phone():
-    # `2024-01-15`: last group is 2 chars, phone requires 3-9.
-    assert obfuscate("released 2024-01-15") == "released 2024-01-15"
+@pytest.mark.parametrize(
+    "date",
+    [
+        "2024-01-15",   # ISO YYYY-MM-DD
+        "15-01-2024",   # DD-MM-YYYY
+        "01-15-2024",   # MM-DD-YYYY
+        "15.01.2024",   # DD.MM.YYYY
+        "01.15.2024",   # MM.DD.YYYY
+        "2024.01.15",   # YYYY.MM.DD
+        "01/15/2024",   # slash-separated (separator not even in our class)
+    ],
+)
+def test_date_formats_not_phone(date):
+    assert obfuscate(f"released {date}") == f"released {date}"
 
 
 def test_bare_digits_not_phone():
