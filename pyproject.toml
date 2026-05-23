@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "wlens"
-version = "0.2.0"
+version = "0.3.0"
 description = "Warehouse lens for AI agents — per-table markdown docs + read-only SQL adaptor, zero-runtime schema exploration for Claude Code, Cursor, Continue."
 readme = "README.md"
 license = { file = "LICENSE" }
