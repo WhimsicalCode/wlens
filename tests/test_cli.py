@@ -60,10 +60,60 @@ def test_init_writes_wlens_gitignore(tmp_path: Path, monkeypatch):
     gi = tmp_path / "wlens" / ".gitignore"
     assert gi.exists()
     body = gi.read_text()
-    # cache/ and share/ must be ignored — schema/ must NOT be (it's the point).
-    assert "cache/" in body
+    # SQL query cache + share/ ignored; sample-row cache explicitly tracked;
+    # generated schema markdown stays out of the ignore list (it's the point).
+    assert ".cache/*" in body
+    assert "!.cache/samples/" in body
     assert "share/" in body
     assert "schema/" not in body
+
+
+def test_generate_migrates_legacy_wlens_gitignore(tmp_path: Path, monkeypatch, dbt_project):
+    """An older `wlens/.gitignore` (pre-`.cache/` rename) is rewritten in place."""
+    import textwrap
+    from wlens.cli import WLENS_GITIGNORE_BODY, WLENS_GITIGNORE_LEGACY
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "wlens.yml").write_text(
+        textwrap.dedent(f"""
+            adapter:
+              kind: dbt
+              project_dir: {dbt_project.relative_to(tmp_path)}
+            output:
+              dir: wlens/schema
+              include_sample_rows: false
+        """).lstrip()
+    )
+    gi = tmp_path / "wlens" / ".gitignore"
+    gi.parent.mkdir(parents=True, exist_ok=True)
+    gi.write_text(WLENS_GITIGNORE_LEGACY)
+
+    assert main(["generate"]) == 0
+    assert gi.read_text() == WLENS_GITIGNORE_BODY
+
+
+def test_generate_leaves_custom_wlens_gitignore_alone(tmp_path: Path, monkeypatch, dbt_project):
+    """If the user has hand-edited `wlens/.gitignore`, don't touch it."""
+    import textwrap
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "wlens.yml").write_text(
+        textwrap.dedent(f"""
+            adapter:
+              kind: dbt
+              project_dir: {dbt_project.relative_to(tmp_path)}
+            output:
+              dir: wlens/schema
+              include_sample_rows: false
+        """).lstrip()
+    )
+    gi = tmp_path / "wlens" / ".gitignore"
+    gi.parent.mkdir(parents=True, exist_ok=True)
+    custom = "# my own rules\nfoo/\nbar/\n"
+    gi.write_text(custom)
+
+    assert main(["generate"]) == 0
+    assert gi.read_text() == custom
 
 
 def test_init_defaults_project_dir_to_dot_when_no_dbt_project(tmp_path: Path, monkeypatch):

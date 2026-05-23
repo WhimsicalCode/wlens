@@ -47,6 +47,7 @@ import yaml
 
 DEFAULT_CONFIG_FILENAME = "wlens.yml"
 DEFAULT_OUTPUT_DIR = "wlens/schema"
+DEFAULT_CACHE_DIR = "wlens/.cache/samples"
 DEFAULT_SAMPLE_SIZE = 5
 ENV_VAR_PATTERN = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
 
@@ -75,6 +76,7 @@ class ExecutorConfig:
 @dataclass
 class OutputConfig:
     dir: str = DEFAULT_OUTPUT_DIR
+    cache_dir: str = DEFAULT_CACHE_DIR
     include_sample_rows: bool = True
     sample_size: int = DEFAULT_SAMPLE_SIZE
     # Extra value-level obfuscation rules appended to the built-in defaults
@@ -102,6 +104,10 @@ class Config:
     @property
     def output_dir(self) -> Path:
         return (self.repo_root / self.output.dir).resolve()
+
+    @property
+    def cache_dir(self) -> Path:
+        return (self.repo_root / self.output.cache_dir).resolve()
 
 
 def find_config(start: Path | None = None) -> Path:
@@ -160,6 +166,7 @@ def _build_config(raw: dict, repo_root: Path) -> Config:
     )
     output = OutputConfig(
         dir=output_raw.get("dir", DEFAULT_OUTPUT_DIR),
+        cache_dir=output_raw.get("cache_dir", DEFAULT_CACHE_DIR),
         include_sample_rows=bool(output_raw.get("include_sample_rows", True)),
         sample_size=int(output_raw.get("sample_size", DEFAULT_SAMPLE_SIZE)),
         obfuscate=list(output_raw.get("obfuscate") or []),
