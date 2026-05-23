@@ -444,6 +444,37 @@ def test_refresh_samples_slug_targets_one_entity(tmp_path, dbt_project):
     assert executor.calls == base_calls + 1
 
 
+class _FlakyExecutor(_StubExecutor):
+    """Returns headers/rows on the first call, then empty on subsequent calls."""
+
+    def run_direct(self, sql: str):  # noqa: ARG002
+        self.calls += 1
+        if self.calls == 1:
+            return self._headers, self._rows, False
+        return self._headers, [], False
+
+
+def test_refresh_falls_back_to_cache_when_fetch_returns_empty(tmp_path, dbt_project):
+    """Forced refresh that comes back empty must not drop the cache or the
+    rendered section — the next run should still produce identical .md."""
+    cfg = load_config(_setup_project(tmp_path, dbt_project))
+    cfg.output.include_sample_rows = True
+    entities = _widget_only(DbtAdapter(cfg).list_entities())
+
+    executor = _FlakyExecutor(headers=["widget_id", "color"], rows=[(1, "red"), (2, "blue")])
+
+    render_and_write_all(entities, [], executor, cfg)
+    first_md = (cfg.output_dir / "prod.dim_widget.md").read_text()
+    assert "## Sample rows" in first_md
+
+    # Second run: --refresh-samples forces a fetch, but the executor returns
+    # nothing. The .md must still contain the previously-cached rows.
+    render_and_write_all(entities, [], executor, cfg, refresh_samples=True)
+    second_md = (cfg.output_dir / "prod.dim_widget.md").read_text()
+    assert second_md == first_md
+    assert executor.calls == 2  # the refresh did try to fetch
+
+
 def test_sample_cache_reused_when_no_executor(tmp_path, dbt_project):
     cfg = load_config(_setup_project(tmp_path, dbt_project))
     cfg.output.include_sample_rows = True

@@ -223,6 +223,16 @@ def _resolve_sample_rows(
 
     raw = _fetch_head(executor, entity, sample_size)
     if not raw:
+        # Fetch failed or table is empty. Don't drop the rendered sample-rows
+        # section to `[]` if we already have a valid cache — that would flip
+        # the .md between "with rows" and "without rows" across runs whenever
+        # a query is transiently flaky.
+        cached = sample_cache.load(entity, cfg, obf_hash)
+        if cached is not None:
+            logger.warning(
+                f"  sample fetch for {entity.slug} returned no rows; reusing cached samples"
+            )
+            return cached
         return []
     rendered = _eagerly_render_rows(raw, entity, obfuscate_value)
     try:
