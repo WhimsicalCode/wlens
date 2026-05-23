@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 from ..adapters.base import Column, Entity, Parent
+from . import sample_cache
 from .obfuscate import compile_rules, obfuscate
 from .pii import PII_REDACTED, pii_column_names
 from .preserve import read_manual_block
@@ -43,8 +44,16 @@ def render_and_write_all(
     custom_entities: list["TableCatalog"],
     executor: "Executor | None",
     config: "Config",
+    *,
+    refresh_samples: bool | set[str] = False,
 ) -> int:
-    """Render every entity + the index into `config.output_dir`."""
+    """Render every entity + the index into `config.output_dir`.
+
+    `refresh_samples` controls the sample-row cache:
+    - `False` (default): reuse cache when valid, refetch otherwise.
+    - `True`: ignore cache for every entity, refetch all.
+    - `set[str]` of entity slugs: refetch just those, reuse cache for the rest.
+    """
     output_dir = config.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -53,12 +62,18 @@ def render_and_write_all(
     obfuscate_value = functools.partial(
         obfuscate, rules=compile_rules(config.output.obfuscate)
     )
+    obf_hash = sample_cache.obfuscation_hash(config)
+    refresh_all = refresh_samples is True
+    refresh_set: set[str] = (
+        set(refresh_samples) if isinstance(refresh_samples, (set, list, tuple)) else set()
+    )
 
     for entity in entities:
-        head_rows = _fetch_head(executor, entity, sample_size) if executor else []
-        body = _render_entity(
-            entity, head_rows, inline_map.get(entity.slug), obfuscate_value
+        rendered_rows = _resolve_sample_rows(
+            entity, executor, sample_size, config, obfuscate_value, obf_hash,
+            refresh_all=refresh_all, refresh_set=refresh_set,
         )
+        body = _render_entity(entity, rendered_rows, inline_map.get(entity.slug))
         _write_file(output_dir / entity.filename, body)
 
     index_path = output_dir / "_index.md"
@@ -72,9 +87,8 @@ def render_and_write_all(
 
 def _render_entity(
     entity: Entity,
-    head_rows: list[dict],
+    rendered_rows: list[dict],
     custom_entity: "TableCatalog | None",
-    obfuscate_value: Callable[[str], str],
 ) -> str:
     kind_label = "model" if entity.kind == "model" else "source"
     if custom_entity is not None:
@@ -88,9 +102,7 @@ def _render_entity(
     if custom_entity is not None:
         lines.extend(custom_entity.render())
     lines.extend(_render_parents(entity.parents))
-    lines.extend(
-        _render_sample_rows(head_rows, pii_column_names(entity.columns), obfuscate_value)
-    )
+    lines.extend(_render_sample_rows(rendered_rows))
     lines.extend(_render_compiled_sql(entity.compiled_sql))
     return "\n".join(lines).rstrip() + "\n"
 
@@ -125,22 +137,19 @@ def _render_parents(parents: list[Parent]) -> list[str]:
     return lines
 
 
-def _render_sample_rows(
-    head_rows: list[dict],
-    pii_columns: set[str],
-    obfuscate_value: Callable[[str], str],
-) -> list[str]:
-    """Column-first (transposed) rendering: one bullet per column, pipe-separated values."""
-    if not head_rows:
+def _render_sample_rows(rendered_rows: list[dict]) -> list[str]:
+    """Column-first (transposed) rendering: one bullet per column, pipe-separated values.
+
+    Cells are expected to be already obfuscated + truncated (see
+    `_eagerly_render_rows`).
+    """
+    if not rendered_rows:
         return []
-    cols = list(head_rows[0].keys())
-    n_rows = len(head_rows)
+    cols = list(rendered_rows[0].keys())
+    n_rows = len(rendered_rows)
     lines = [f"## Sample rows ({n_rows} rows, one line per column)", ""]
     for c in cols:
-        if c in pii_columns:
-            values = " | ".join([PII_REDACTED] * n_rows)
-        else:
-            values = " | ".join(_cell(row.get(c), obfuscate_value) for row in head_rows)
+        values = " | ".join(row.get(c, "") for row in rendered_rows)
         lines.append(f"- `{c}`: {values}")
     lines.append("")
     return lines
@@ -175,7 +184,62 @@ def _render_index(entities: list[Entity]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-# ─── Sample-row fetching ────────────────────────────────────────────────────
+# ─── Sample-row fetching + caching ──────────────────────────────────────────
+
+
+def _resolve_sample_rows(
+    entity: Entity,
+    executor: "Executor | None",
+    sample_size: int,
+    cfg: "Config",
+    obfuscate_value: Callable[[str], str],
+    obf_hash: str,
+    *,
+    refresh_all: bool,
+    refresh_set: set[str],
+) -> list[dict]:
+    """Return rendered (post-obfuscation) rows for an entity, using cache when possible."""
+    if sample_size <= 0:
+        return []
+
+    force_refresh = refresh_all or entity.slug in refresh_set
+    if not force_refresh:
+        cached = sample_cache.load(entity, cfg, obf_hash)
+        if cached is not None:
+            return cached
+
+    if executor is None:
+        # No way to fetch fresh. Fall back to whatever cache exists, even if
+        # the user asked for refresh — they can't have it without a DB.
+        cached = sample_cache.load(entity, cfg, obf_hash)
+        if cached is not None:
+            if force_refresh:
+                logger.warning(
+                    f"  refresh requested for {entity.slug} but no executor configured; "
+                    "reusing cached samples"
+                )
+            return cached
+        return []
+
+    raw = _fetch_head(executor, entity, sample_size)
+    if not raw:
+        # Fetch failed or table is empty. Don't drop the rendered sample-rows
+        # section to `[]` if we already have a valid cache — that would flip
+        # the .md between "with rows" and "without rows" across runs whenever
+        # a query is transiently flaky.
+        cached = sample_cache.load(entity, cfg, obf_hash)
+        if cached is not None:
+            logger.warning(
+                f"  sample fetch for {entity.slug} returned no rows; reusing cached samples"
+            )
+            return cached
+        return []
+    rendered = _eagerly_render_rows(raw, entity, obfuscate_value)
+    try:
+        sample_cache.save(entity, rendered, cfg, obf_hash)
+    except OSError as e:
+        logger.warning(f"  could not write sample cache for {entity.slug}: {e!r}")
+    return rendered
 
 
 def _fetch_head(executor: "Executor", entity: Entity, sample_size: int) -> list[dict]:
@@ -183,7 +247,7 @@ def _fetch_head(executor: "Executor", entity: Entity, sample_size: int) -> list[
         return []
     try:
         headers, rows, _ = executor.run_direct(
-            f'select * from {entity.schema_name}.{entity.table_name} limit {sample_size}'
+            f"select * from {entity.schema_name}.{entity.table_name} limit {sample_size}"
         )
     except Exception as e:
         logger.warning(f"  could not fetch samples for {entity.slug}: {e!r}")
@@ -192,6 +256,25 @@ def _fetch_head(executor: "Executor", entity: Entity, sample_size: int) -> list[
         {col: _truncate(val) for col, val in zip(headers, row)}
         for row in rows
     ]
+
+
+def _eagerly_render_rows(
+    head_rows: list[dict],
+    entity: Entity,
+    obfuscate_value: Callable[[str], str],
+) -> list[dict]:
+    """Convert raw fetched rows into pre-obfuscated, cell-truncated dicts."""
+    pii_cols = pii_column_names(entity.columns)
+    rendered: list[dict] = []
+    for row in head_rows:
+        rendered_row: dict = {}
+        for col in row.keys():
+            if col in pii_cols:
+                rendered_row[col] = PII_REDACTED
+            else:
+                rendered_row[col] = _cell(row.get(col), obfuscate_value)
+        rendered.append(rendered_row)
+    return rendered
 
 
 # ─── File writing + manual-notes preservation ───────────────────────────────

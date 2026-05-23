@@ -35,8 +35,10 @@ class _StubExecutor:
     def __init__(self, headers: list[str], rows: list[tuple]):
         self._headers = headers
         self._rows = rows
+        self.calls = 0
 
     def run_direct(self, sql: str):  # noqa: ARG002 — sql ignored, fixed payload
+        self.calls += 1
         return self._headers, self._rows, False
 
 
@@ -343,3 +345,149 @@ def test_plans_example_renders():
     # auto-render still handles plain scalars.
     assert "**Price:** $0" in md
     assert "**Seats included:** 5" in md
+
+
+# ─── Sample-row cache ───────────────────────────────────────────────────────
+
+
+def _widget_executor() -> _StubExecutor:
+    return _StubExecutor(
+        headers=["widget_id", "color"],
+        rows=[(1, "red"), (2, "blue")],
+    )
+
+
+def _widget_only(entities):
+    return [e for e in entities if e.slug == "prod.dim_widget"]
+
+
+def test_sample_cache_skips_requery_on_second_run(tmp_path, dbt_project):
+    cfg = load_config(_setup_project(tmp_path, dbt_project))
+    cfg.output.include_sample_rows = True
+    entities = _widget_only(DbtAdapter(cfg).list_entities())
+    executor = _widget_executor()
+
+    render_and_write_all(entities, [], executor, cfg)
+    first_md = (cfg.output_dir / "prod.dim_widget.md").read_text()
+    assert executor.calls == 1
+    cache_file = cfg.cache_dir / "prod.dim_widget.json"
+    assert cache_file.exists()
+
+    # Second run: same executor, same cache → zero new queries, identical output.
+    render_and_write_all(entities, [], executor, cfg)
+    second_md = (cfg.output_dir / "prod.dim_widget.md").read_text()
+    assert executor.calls == 1, "cache hit must not re-query"
+    assert first_md == second_md
+
+
+def test_sample_cache_refetches_when_column_drifts(tmp_path, dbt_project):
+    cfg = load_config(_setup_project(tmp_path, dbt_project))
+    cfg.output.include_sample_rows = True
+    entities = _widget_only(DbtAdapter(cfg).list_entities())
+    executor = _widget_executor()
+
+    render_and_write_all(entities, [], executor, cfg)
+    assert executor.calls == 1
+
+    # Mutate a column's data_type — cache should invalidate just for this entity.
+    next(iter(entities[0].columns.values())).data_type = "TOTALLY_NEW_TYPE"
+    render_and_write_all(entities, [], executor, cfg)
+    assert executor.calls == 2
+
+
+def test_sample_cache_refetches_when_obfuscation_changes(tmp_path, dbt_project):
+    cfg = load_config(_setup_project(tmp_path, dbt_project))
+    cfg.output.include_sample_rows = True
+    entities = _widget_only(DbtAdapter(cfg).list_entities())
+    executor = _widget_executor()
+
+    render_and_write_all(entities, [], executor, cfg)
+    assert executor.calls == 1
+
+    cfg.output.obfuscate = [{"pattern": "red", "replacement": "<color>"}]
+    render_and_write_all(entities, [], executor, cfg)
+    assert executor.calls == 2
+    md = (cfg.output_dir / "prod.dim_widget.md").read_text()
+    assert "<color>" in md
+
+
+def test_refresh_samples_all_forces_requery(tmp_path, dbt_project):
+    cfg = load_config(_setup_project(tmp_path, dbt_project))
+    cfg.output.include_sample_rows = True
+    entities = _widget_only(DbtAdapter(cfg).list_entities())
+    executor = _widget_executor()
+
+    render_and_write_all(entities, [], executor, cfg)
+    assert executor.calls == 1
+
+    render_and_write_all(entities, [], executor, cfg, refresh_samples=True)
+    assert executor.calls == 2
+
+
+def test_refresh_samples_slug_targets_one_entity(tmp_path, dbt_project):
+    cfg = load_config(_setup_project(tmp_path, dbt_project))
+    cfg.output.include_sample_rows = True
+    entities = [
+        e for e in DbtAdapter(cfg).list_entities()
+        if e.slug in {"prod.dim_widget", "prod.fct_sale"}
+    ]
+    executor = _StubExecutor(headers=["a"], rows=[(1,)])
+
+    render_and_write_all(entities, [], executor, cfg)
+    base_calls = executor.calls
+    assert base_calls >= 2  # one per entity on cold cache
+
+    render_and_write_all(
+        entities, [], executor, cfg, refresh_samples={"prod.dim_widget"}
+    )
+    # Only one entity refetched; the other should hit the cache.
+    assert executor.calls == base_calls + 1
+
+
+class _FlakyExecutor(_StubExecutor):
+    """Returns headers/rows on the first call, then empty on subsequent calls."""
+
+    def run_direct(self, sql: str):  # noqa: ARG002
+        self.calls += 1
+        if self.calls == 1:
+            return self._headers, self._rows, False
+        return self._headers, [], False
+
+
+def test_refresh_falls_back_to_cache_when_fetch_returns_empty(tmp_path, dbt_project):
+    """Forced refresh that comes back empty must not drop the cache or the
+    rendered section — the next run should still produce identical .md."""
+    cfg = load_config(_setup_project(tmp_path, dbt_project))
+    cfg.output.include_sample_rows = True
+    entities = _widget_only(DbtAdapter(cfg).list_entities())
+
+    executor = _FlakyExecutor(headers=["widget_id", "color"], rows=[(1, "red"), (2, "blue")])
+
+    render_and_write_all(entities, [], executor, cfg)
+    first_md = (cfg.output_dir / "prod.dim_widget.md").read_text()
+    assert "## Sample rows" in first_md
+
+    # Second run: --refresh-samples forces a fetch, but the executor returns
+    # nothing. The .md must still contain the previously-cached rows.
+    render_and_write_all(entities, [], executor, cfg, refresh_samples=True)
+    second_md = (cfg.output_dir / "prod.dim_widget.md").read_text()
+    assert second_md == first_md
+    assert executor.calls == 2  # the refresh did try to fetch
+
+
+def test_sample_cache_reused_when_no_executor(tmp_path, dbt_project):
+    cfg = load_config(_setup_project(tmp_path, dbt_project))
+    cfg.output.include_sample_rows = True
+    entities = _widget_only(DbtAdapter(cfg).list_entities())
+    executor = _widget_executor()
+
+    render_and_write_all(entities, [], executor, cfg)
+    md_with_executor = (cfg.output_dir / "prod.dim_widget.md").read_text()
+
+    # Wipe the markdown so we know the second render had to build it from scratch.
+    (cfg.output_dir / "prod.dim_widget.md").unlink()
+
+    render_and_write_all(entities, [], None, cfg)
+    md_offline = (cfg.output_dir / "prod.dim_widget.md").read_text()
+    assert "## Sample rows" in md_offline
+    assert md_offline == md_with_executor

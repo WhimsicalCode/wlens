@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-CACHE_DIRNAME = "wlens/cache"
+CACHE_DIRNAME = "wlens/.cache"
 CACHE_TTL_SECONDS = 24 * 60 * 60  # 24 hours
 CACHE_SUBDIR = "sql"
 
@@ -110,7 +110,7 @@ class Executor(ABC):
     ) -> tuple[list[str], list[tuple], bool]:
         """Execute a guarded query, return (headers, rows, cache_hit).
 
-        Caches to `.wlens-cache/sql/` with a daily TTL.
+        Caches to `wlens/.cache/sql/` with a daily TTL.
         """
         assert_read_only(sql)
         if use_cache:

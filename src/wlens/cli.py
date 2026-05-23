@@ -24,6 +24,16 @@ from .config import DEFAULT_CONFIG_FILENAME, DEFAULT_OUTPUT_DIR, find_config, lo
 
 logger = logging.getLogger(__name__)
 
+WLENS_GITIGNORE_BODY = (
+    "# wlens-managed — do not edit.\n"
+    ".cache/*\n"
+    "!.cache/samples/\n"
+    "share/\n"
+)
+# Predecessor body (pre-`.cache/` rename). `wlens generate` rewrites the file
+# in-place when it sees this exact content so existing installs migrate.
+WLENS_GITIGNORE_LEGACY = "# wlens-managed — do not edit.\ncache/\nshare/\n"
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
@@ -39,6 +49,17 @@ def main(argv: list[str] | None = None) -> int:
     p_gen.add_argument("--config", help=f"Path to {DEFAULT_CONFIG_FILENAME} (default: walk up from cwd).")
     p_gen.add_argument("--output-dir", help="Override output directory from config.")
     p_gen.add_argument("--skip-samples", action="store_true", help="Don't fetch sample rows from the warehouse.")
+    p_gen.add_argument(
+        "--refresh-samples",
+        nargs="?",
+        const="*",
+        default=None,
+        metavar="SLUG[,SLUG…]",
+        help=(
+            "Force-refresh sample rows. Pass with no value to refresh every table, "
+            "or with a comma-separated list of `schema.table` slugs to refresh just those."
+        ),
+    )
 
     p_query = sub.add_parser("query", help="Execute a read-only SQL query.")
     p_query.add_argument("sql", nargs="?", help="SQL to execute (or piped via stdin).")
@@ -124,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
             config_path=Path(args.config) if args.config else None,
             output_override=args.output_dir,
             skip_samples=args.skip_samples,
+            refresh_samples=args.refresh_samples,
         )
     if args.command == "query":
         return _cmd_query(
@@ -285,12 +307,13 @@ def _cmd_init(*, force: bool) -> int:
         dest.write_text(content)
         logger.info(f"wrote {dest.relative_to(cwd)}")
 
-    # Seed `wlens/.gitignore` so cache + share stay out of the consumer's repo.
-    # The generated schema markdown IS meant to be committed — not ignored.
+    # Seed `wlens/.gitignore`. Schema markdown + sample cache are committed
+    # (the latter pins sample rows for stable diffs); SQL query cache and
+    # share/ stay out of the consumer's repo.
     gitignore = cwd / "wlens" / ".gitignore"
     if not gitignore.exists() or force:
         gitignore.parent.mkdir(parents=True, exist_ok=True)
-        gitignore.write_text("# wlens-managed — do not edit.\ncache/\nshare/\n")
+        gitignore.write_text(WLENS_GITIGNORE_BODY)
         logger.info(f"wrote {gitignore.relative_to(cwd)}")
 
     logger.info("")
@@ -390,7 +413,28 @@ def _set_yaml_value(yaml_content: str, key: str, value: str) -> str:
     return "".join(out_lines)
 
 
-def _cmd_generate(*, config_path: Path | None, output_override: str | None, skip_samples: bool) -> int:
+def _migrate_wlens_gitignore(repo_root: Path) -> None:
+    """Rewrite a pre-`.cache/` `wlens/.gitignore` to the new pattern in place.
+
+    One-shot migration helper. Safe to delete (along with `WLENS_GITIGNORE_LEGACY`
+    and the two test cases in tests/test_cli.py) once existing installs have all
+    run `wlens generate` at least once after the rename — target 0.5+.
+    """
+    path = repo_root / "wlens" / ".gitignore"
+    if not path.exists():
+        return
+    if path.read_text() == WLENS_GITIGNORE_LEGACY:
+        path.write_text(WLENS_GITIGNORE_BODY)
+        logger.info(f"updated {path.relative_to(repo_root)} for new cache layout")
+
+
+def _cmd_generate(
+    *,
+    config_path: Path | None,
+    output_override: str | None,
+    skip_samples: bool,
+    refresh_samples: str | None,
+) -> int:
     from .adapters.dbt import DbtAdapter
     from .entities.loader import load_entities
     from .executor import build_executor
@@ -399,6 +443,8 @@ def _cmd_generate(*, config_path: Path | None, output_override: str | None, skip
     config = load_config(config_path)
     if output_override:
         config.output.dir = output_override
+
+    _migrate_wlens_gitignore(config.repo_root)
 
     if config.adapter.kind != "dbt":
         raise NotImplementedError(
@@ -419,7 +465,15 @@ def _cmd_generate(*, config_path: Path | None, output_override: str | None, skip
             logger.warning(f"could not build executor ({e!r}) — continuing without sample rows.")
             executor = None
 
-    count = render_and_write_all(entities, custom_entities, executor, config)
+    refresh_arg: bool | set[str] = False
+    if refresh_samples == "*":
+        refresh_arg = True
+    elif refresh_samples:
+        refresh_arg = {s.strip() for s in refresh_samples.split(",") if s.strip()}
+
+    count = render_and_write_all(
+        entities, custom_entities, executor, config, refresh_samples=refresh_arg
+    )
     logger.info(f"wrote {count} entity files to {config.output.dir}")
     if executor is not None:
         executor.close()
@@ -504,7 +558,7 @@ def _cmd_clean(
     ]
     # Back-compat: previous versions scattered files at the repo root. Clean
     # them up if they're still there.
-    for legacy in (".wlens-cache", "wlens-share", ".claude/schema"):
+    for legacy in (".wlens-cache", "wlens/cache", "wlens-share", ".claude/schema"):
         legacy_path = repo_root / legacy
         if legacy_path.exists():
             targets.append(legacy_path)
