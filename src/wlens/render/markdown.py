@@ -57,6 +57,11 @@ def render_and_write_all(
     output_dir = config.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # A dbt manifest can expose the same physical relation as both a model and
+    # a source. Both entities otherwise share a markdown path and sample-cache
+    # path, causing them to invalidate and overwrite each other on every run.
+    entities = _deduplicate_entities(entities)
+
     inline_map = _inline_map(custom_entities)
     sample_size = config.output.sample_size if config.output.include_sample_rows else 0
     obfuscate_value = functools.partial(
@@ -287,7 +292,27 @@ def _write_file(path: Path, new_body: str) -> None:
     logger.info(f"  wrote {path.name}")
 
 
-# ─── Inlining custom entities ───────────────────────────────────────────────
+# ─── Duplicate relations + inlining custom entities ────────────────────────
+
+
+def _deduplicate_entities(entities: list[Entity]) -> list[Entity]:
+    """Keep one entity per physical `schema.table` relation.
+
+    Later entities win, matching the renderer's previous effective behavior:
+    dbt entities are sorted model-first/source-last, and both wrote the same
+    file, so a source already replaced a colliding model's markdown. Doing the
+    selection up front also prevents their cache fingerprints from fighting.
+    """
+    by_slug: dict[str, Entity] = {}
+    for entity in entities:
+        previous = by_slug.get(entity.slug)
+        if previous is not None:
+            logger.warning(
+                f"  duplicate relation {entity.slug} appears as "
+                f"{previous.kind} and {entity.kind}; using {entity.kind}"
+            )
+        by_slug[entity.slug] = entity
+    return list(by_slug.values())
 
 
 def _inline_map(custom_entities: list["TableCatalog"]) -> dict[str, "TableCatalog"]:
