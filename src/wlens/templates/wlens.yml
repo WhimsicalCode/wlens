@@ -15,6 +15,8 @@ executor:
   #   database: ${WLENS_DB_NAME}
   #   user:     ${WLENS_DB_USER}
   #   password: ${WLENS_DB_PASSWORD}
+  # Or load those fields lazily from JSON instead of exporting them:
+  #   credential_process: [./scripts/wlens-credentials]
 
 # Value-level scrubbing of sample-row cells.
 # Defaults always on: email, IPv4, phone → <email> / <ip> / <phone>.

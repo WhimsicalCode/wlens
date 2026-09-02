@@ -17,6 +17,8 @@ Config shape:
       database: ${WLENS_DB_NAME}
       user: ${WLENS_DB_USER}
       password: ${WLENS_DB_PASSWORD}
+      # Or load connection fields from a subprocess when the executor is built:
+      # credential_process: [./scripts/wlens-credentials]
 
     output:
       dir: .claude/schema
@@ -69,6 +71,7 @@ class ExecutorConfig:
     database: str | None = None
     user: str | None = None
     password: str | None = None
+    credential_process: list[str] = field(default_factory=list)
     # File path (or `:memory:`) for file-based engines like DuckDB.
     path: str | None = None
 
@@ -162,6 +165,7 @@ def _build_config(raw: dict, repo_root: Path) -> Config:
         database=_str_or_none(executor_raw.get("database")),
         user=_str_or_none(executor_raw.get("user")),
         password=_str_or_none(executor_raw.get("password")),
+        credential_process=_parse_credential_process(executor_raw.get("credential_process")),
         path=_str_or_none(executor_raw.get("path")),
     )
     output = OutputConfig(
@@ -196,6 +200,22 @@ def _build_config(raw: dict, repo_root: Path) -> Config:
         entities=entities,
         repo_root=repo_root,
         plugins=plugins,
+    )
+
+
+def _parse_credential_process(value: Any) -> list[str]:
+    if isinstance(value, str) and value.strip():
+        return [value]
+    if (
+        isinstance(value, list)
+        and value
+        and all(isinstance(argument, str) and argument for argument in value)
+    ):
+        return list(value)
+    if value is None:
+        return []
+    raise ValueError(
+        "`executor.credential_process` must be a command string or a non-empty list of strings."
     )
 
 

@@ -64,7 +64,9 @@ line.
 
 The markdown is committed to your repo. The agent can grep and read it
 without warehouse credentials. Credentials are only needed when a query
-runs.
+runs. They can come from environment variables or a lazy
+[`credential_process`](docs/wlens-yml-reference.md#credential-process), which
+keeps them out of the agent's ambient environment.
 
 ### Why markdown
 
