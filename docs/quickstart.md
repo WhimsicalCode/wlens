@@ -57,11 +57,60 @@ executor:
   #   database: ${WLENS_DB_NAME}
   #   user:     ${WLENS_DB_USER}
   #   password: ${WLENS_DB_PASSWORD}
+  # Or load those fields lazily from JSON instead of exporting them:
+  #   credential_process: [./scripts/wlens-credentials]
 ```
 
 Env-var substitution (`${SOME_VAR}`) happens at load time, so secrets
 stay out of the committed file. Set them however you prefer (`.env`,
 direnv, your platform's secret manager).
+
+To avoid putting warehouse credentials in the caller's environment, configure
+a process that returns the connection fields as JSON instead:
+
+```yaml
+executor:
+  kind: redshift
+  credential_process: [./scripts/wlens-credentials]
+```
+
+The command must write exactly one JSON object to stdout and nothing else:
+
+```json
+{
+  "host": "warehouse.example.com",
+  "port": 5439,
+  "database": "analytics",
+  "user": "reader",
+  "password": "secret"
+}
+```
+
+It may return any subset of `host`, `port`, `database`, `user`, `password`, and
+`path`. Returned values override the corresponding fields written directly in
+`wlens.yml`, so a common setup keeps `host`, `port`, and `database` static while
+the process returns only `user` and `password`.
+
+The process can be any executable that produces that JSON. For example, if an
+AWS Secrets Manager secret named `analytics/wlens` contains the object above:
+
+```yaml
+credential_process:
+  - aws
+  - secretsmanager
+  - get-secret-value
+  - --secret-id
+  - analytics/wlens
+  - --query
+  - SecretString
+  - --output
+  - text
+```
+
+The command runs directly without a shell, relative to the directory containing
+`wlens.yml`, and only when wlens needs an executor. See the
+[`wlens.yml` reference](wlens-yml-reference.md#credential-process) for complete
+validation and security behavior.
 
 ## 4. Compile dbt
 

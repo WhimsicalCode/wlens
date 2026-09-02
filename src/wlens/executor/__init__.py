@@ -12,9 +12,13 @@ if TYPE_CHECKING:
 __all__ = ["Executor", "ReadOnlyViolation", "build_executor", "format_markdown_table"]
 
 
-def build_executor(config: "Config") -> Executor:
+def build_executor(config: Config) -> Executor:
     """Instantiate the executor indicated by `wlens.yml`."""
+    from .credentials import resolve_credentials
+
     kind = (config.executor.kind or "").lower()
+    if kind in {"redshift", "postgres", "postgresql", "duckdb"}:
+        config = resolve_credentials(config)
     if kind in ("redshift",):
         from .redshift import RedshiftExecutor
         return RedshiftExecutor(config)

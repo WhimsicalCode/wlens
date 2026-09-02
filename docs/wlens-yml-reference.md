@@ -50,11 +50,53 @@ queries entirely — you'll still get schema docs.
 | `database` | — | Server engines only. |
 | `user` | — | Server engines only. |
 | `password` | — | Server engines only. |
+| `credential_process` | — | Command that returns connection fields as JSON. Accepts an executable string or an argument list. |
 
 **Environment-variable expansion.** Any string value of the form
 `${SOME_NAME}` is expanded from the process environment when `wlens.yml`
 is loaded. Missing variables become empty strings. This keeps secrets out
 of the committed file.
+
+### Credential process
+
+Use `credential_process` when credentials should be loaded only for warehouse
+operations instead of exported into the shell running wlens:
+
+```yaml
+executor:
+  kind: redshift
+  credential_process:
+    - ./scripts/wlens-credentials
+```
+
+The command must write one JSON object to stdout. It may return any subset of
+`host`, `port`, `database`, `user`, `password`, and `path`; returned values
+override the corresponding static executor fields.
+
+```json
+{
+  "host": "warehouse.example.com",
+  "port": 5439,
+  "database": "analytics",
+  "user": "reader",
+  "password": "..."
+}
+```
+
+The process runs only when wlens builds an executor for a query, sample-row
+fetch, or MCP server. Relative executable paths and arguments resolve from the
+directory containing `wlens.yml`. Wlens captures the output in memory and does
+not add the returned values to its environment or the caller's environment.
+
+Commands run directly, without a shell. Use a YAML list when passing arguments:
+
+```yaml
+credential_process: [./scripts/wlens-credentials, --profile, analytics]
+```
+
+Do not put secrets directly in command arguments because other local processes
+may be able to inspect process arguments. Stdout must contain only the JSON
+object. For safety, wlens does not reproduce stdout or stderr in errors.
 
 ### DuckDB
 
