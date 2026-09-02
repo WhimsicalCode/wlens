@@ -139,6 +139,12 @@ wlens/schema/
 If your executor is configured and reachable, each file includes five
 sample rows. Offline / no credentials? Pass `--skip-samples`.
 
+Sample rows are pinned in `wlens/.cache/samples/` to keep generated diffs
+stable. `wlens generate` reuses them while the table's column-name hash is
+unchanged (column order and data-type metadata do not count). PII flags and
+obfuscation rules are checked separately so newly-sensitive values cannot leak.
+Use `--refresh-samples` only when you intentionally want new samples.
+
 ## 6. Ask your AI agent something
 
 Open Claude Code, Cursor, Continue, or Codex and ask a question. The

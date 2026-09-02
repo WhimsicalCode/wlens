@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import textwrap
 from pathlib import Path
 
+from wlens.adapters.base import Column, Entity
 from wlens.adapters.dbt import DbtAdapter
 from wlens.config import load_config
 from wlens.entities.loader import load_entities
@@ -361,6 +363,41 @@ def _widget_only(entities):
     return [e for e in entities if e.slug == "prod.dim_widget"]
 
 
+def test_duplicate_model_and_source_share_one_cache_entry(tmp_path, dbt_project):
+    """A model/source pair for one physical relation must not overwrite the
+    same cache twice on every generate run."""
+    cfg = load_config(_setup_project(tmp_path, dbt_project))
+    cfg.output.include_sample_rows = True
+    model = _widget_only(DbtAdapter(cfg).list_entities())[0]
+    source = Entity(
+        kind="source",
+        schema_name=model.schema_name,
+        table_name=model.table_name,
+        description="Source definition wins, matching the old final output.",
+        columns={
+            "widget_id": Column(name="widget_id"),
+            # Deliberately differs from the model fingerprint. Before
+            # deduplication, these two entities invalidated each other.
+            "source_color": Column(name="source_color"),
+        },
+    )
+    executor = _StubExecutor(
+        headers=["widget_id", "source_color"],
+        rows=[(1, "red")],
+    )
+
+    count = render_and_write_all([model, source], [], executor, cfg)
+    assert count == 1
+    assert executor.calls == 1
+    first_cache = (cfg.cache_dir / "prod.dim_widget.json").read_text()
+
+    count = render_and_write_all([model, source], [], executor, cfg)
+    assert count == 1
+    assert executor.calls == 1
+    assert (cfg.cache_dir / "prod.dim_widget.json").read_text() == first_cache
+    assert "(source)" in (cfg.output_dir / "prod.dim_widget.md").read_text()
+
+
 def test_sample_cache_skips_requery_on_second_run(tmp_path, dbt_project):
     cfg = load_config(_setup_project(tmp_path, dbt_project))
     cfg.output.include_sample_rows = True
@@ -380,7 +417,7 @@ def test_sample_cache_skips_requery_on_second_run(tmp_path, dbt_project):
     assert first_md == second_md
 
 
-def test_sample_cache_refetches_when_column_drifts(tmp_path, dbt_project):
+def test_sample_cache_hash_ignores_type_and_column_order_drift(tmp_path, dbt_project):
     cfg = load_config(_setup_project(tmp_path, dbt_project))
     cfg.output.include_sample_rows = True
     entities = _widget_only(DbtAdapter(cfg).list_entities())
@@ -389,10 +426,45 @@ def test_sample_cache_refetches_when_column_drifts(tmp_path, dbt_project):
     render_and_write_all(entities, [], executor, cfg)
     assert executor.calls == 1
 
-    # Mutate a column's data_type — cache should invalidate just for this entity.
+    cache_file = cfg.cache_dir / "prod.dim_widget.json"
+    assert json.loads(cache_file.read_text())["column_names_hash"].startswith("sha256:")
+
+    # Neither data types nor manifest column order affect rendered sample cells.
+    # Keep the cache pinned when only that metadata drifts between dbt compiles.
     next(iter(entities[0].columns.values())).data_type = "TOTALLY_NEW_TYPE"
+    entities[0].columns = dict(reversed(entities[0].columns.items()))
+    render_and_write_all(entities, [], executor, cfg)
+    assert executor.calls == 1
+
+
+def test_sample_cache_refetches_when_column_names_change(tmp_path, dbt_project):
+    cfg = load_config(_setup_project(tmp_path, dbt_project))
+    cfg.output.include_sample_rows = True
+    entities = _widget_only(DbtAdapter(cfg).list_entities())
+    executor = _widget_executor()
+
+    render_and_write_all(entities, [], executor, cfg)
+    assert executor.calls == 1
+
+    entities[0].columns["new_column"] = Column(name="new_column", data_type="varchar")
     render_and_write_all(entities, [], executor, cfg)
     assert executor.calls == 2
+
+
+def test_sample_cache_refetches_when_pii_status_changes(tmp_path, dbt_project):
+    cfg = load_config(_setup_project(tmp_path, dbt_project))
+    cfg.output.include_sample_rows = True
+    entities = _widget_only(DbtAdapter(cfg).list_entities())
+    executor = _widget_executor()
+
+    render_and_write_all(entities, [], executor, cfg)
+    assert executor.calls == 1
+
+    entities[0].columns["color"].meta["pii"] = True
+    render_and_write_all(entities, [], executor, cfg)
+    assert executor.calls == 2
+    md = (cfg.output_dir / "prod.dim_widget.md").read_text()
+    assert "- `color`: <pii> | <pii>" in md
 
 
 def test_sample_cache_refetches_when_obfuscation_changes(tmp_path, dbt_project):
